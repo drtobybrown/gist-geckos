@@ -34,6 +34,7 @@ from printStatus import printStatus
 
 from ngistPipeline._version import __version__
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary import _performance
 from ngistPipeline.continuumCube import _continuumCube
 from ngistPipeline.emissionLines import _emissionLines
 from ngistPipeline.initialise import _initialise
@@ -85,34 +86,41 @@ def runGIST(dirPath, galindex):
     _initialise.setupLogfile(config)
     sys.excepthook = _initialise.handleUncaughtException
 
+    # Setup performance monitor
+    perf_monitor = _performance.setup_performance_monitor(config)
+
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     # - - - - - - - -  P R E P A R A T I O N   M O D U L E S  - - - - - - - - - - -
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
     # - - - - - READ_DATA MODULE - - - - -
-
+    perf_monitor.start_module("read_data")
     cube = _readData.readData_Module(config)
+    perf_monitor.end_module()
     if cube == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - SPATIAL MASKING MODULE - - - - -
-
+    perf_monitor.start_module("spatial_masking")
     _ = _spatialMasking.spatialMasking_Module(config, cube)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - SPATIAL BINNING MODULE - - - - -
-
+    perf_monitor.start_module("spatial_binning")
     _ = _spatialBinning.spatialBinning_Module(config, cube)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - PREPARE SPECTRA MODULE - - - - -
-
+    perf_monitor.start_module("prepare_spectra")
     _ = _prepareSpectra.prepareSpectra_Module(config, cube)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
@@ -124,47 +132,81 @@ def runGIST(dirPath, galindex):
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
     # - - - - - STELLAR KINEMATICS MODULE - - - - -
-
+    perf_monitor.start_module("stellar_kinematics")
     _ = _stellarKinematics.stellarKinematics_Module(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - CONTINUUM CUBE MODULE - - - - -
-
+    perf_monitor.start_module("continuum_cube")
     _ = _continuumCube.continuumCube_Module(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - EMISSION LINES MODULE - - - - -
-
+    perf_monitor.start_module("emission_lines")
     _ = _emissionLines.emissionLines_Module(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - STAR FORMATION HISTORIES MODULE - - - - -
-
+    perf_monitor.start_module("star_formation_histories")
     _ = _starFormationHistories.starFormationHistories_Module(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - LINE STRENGTHS MODULE - - - - -
-
+    perf_monitor.start_module("line_strengths")
     _ = _lineStrengths.lineStrengths_Module(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
     # - - - - - USERS  MODULE - - - - -
-
+    perf_monitor.start_module("user_modules")
     _ = _userModules.user_Modules(config)
+    perf_monitor.end_module()
     if _ == "SKIP":
         skipGalaxy(config)
         return None
 
+    # Save performance metrics
+    perf_monitor.save_benchmark()
+    
+    # Print performance summary
+    summary = perf_monitor.get_summary()
+    logging.info("Performance Summary:")
+    logging.info(f"Total Duration: {summary['total_duration']:.2f} seconds")
+    logging.info(f"Parallel Mode: {'Enabled' if summary['parallel_mode'] else 'Disabled'}")
+    logging.info(f"Total Cores: {summary['total_cores']}")
+    logging.info(f"Threads Available: {summary['num_threads']}")
+    
+    for module, metrics in summary['modules'].items():
+        logging.info(f"\nModule: {module}")
+        logging.info(f"  Duration: {metrics['duration_seconds']:.2f} seconds")
+        if summary['parallel_mode']:
+            logging.info(f"  Max Cores Used: {metrics['max_cores_used']:.1f} of {metrics['max_cores_available']}")
+            logging.info(f"  Avg CPU Usage: {metrics['avg_cpu_percent']:.1f}% ({metrics['avg_cpu_percent_per_core']:.1f}% per core)")
+            logging.info(f"  Max CPU Usage: {metrics['max_cpu_percent']:.1f}% ({metrics['max_cpu_percent_per_core']:.1f}% per core)")
+        else:
+            logging.info(f"  Avg CPU Usage: {metrics['avg_cpu_percent']:.1f}%")
+            logging.info(f"  Max CPU Usage: {metrics['max_cpu_percent']:.1f}%")
+        logging.info(f"  Avg Memory: {metrics['avg_memory_usage_mb']:.1f} MB")
+        logging.info(f"  Max Memory: {metrics['max_memory_usage_mb']:.1f} MB")
+        if 'total_disk_read_mb' in metrics and 'total_disk_write_mb' in metrics:
+            logging.info(f"  Disk Read: {metrics['total_disk_read_mb']:.1f} MB")
+            logging.info(f"  Disk Write: {metrics['total_disk_write_mb']:.1f} MB")
+        else:
+            logging.info("  Disk I/O metrics not available")
 
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     # - - - - - - - -  F I N A L I S E   T H E   A N A L Y S I S  - - - - - - - - -

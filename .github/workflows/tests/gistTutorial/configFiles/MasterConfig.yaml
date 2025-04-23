@@ -4,7 +4,7 @@ GENERAL :
   INPUT : 'NGC0000.fits' # Input file for this analysis run. The specified path is relative to the input path given in defaultDir.
   OUTPUT : . # Output directory. The output of this run will be collected in a subdirectory named RUN_ID. The specified path is relative to the output path given in defaultDir.
   REDSHIFT : 0.008764 # Initial guess on the redshift of the system [in z]. Spectra are shifted to rest-frame, according to this redshift.
-  PARALLEL: False # Use multiprocessing [True/False]
+  PARALLEL: True # Use multiprocessing [True/False]
   NCPU : 4 # Number of cores to use for multiprocessing
   LSF_DATA : 'lsf_MUSE-WFM' # Path of the file specifying the line-spread-function of the observational data. The specified path is relative to the configDir path in defaultDir.
   OW_CONFIG : True #  Ignore configurations from previous runs which are saved in the CONFIG file in the output directory [True/False]
