@@ -5,9 +5,9 @@ import time
 import h5py
 import numpy as np
 from astropy.io import ascii, fits
-from gistPipeline.auxiliary import _auxiliary
-from gistPipeline.lineStrengths import lsindex_spec as lsindex
-from gistPipeline.lineStrengths import ssppop_fitting as ssppop
+from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.lineStrengths import lsindex_spec as lsindex
+from ngistPipeline.lineStrengths import ssppop_fitting as ssppop
 from joblib import Parallel, delayed
 from ppxf.ppxf_util import gaussian_filter1d
 from printStatus import printStatus

@@ -6,8 +6,8 @@ import h5py
 import numpy as np
 from astropy import table
 from astropy.io import fits
-from gistPipeline.auxiliary import _auxiliary
-from gistPipeline.prepareTemplates import _prepareTemplates, prepare_gas_templates
+from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.prepareTemplates import _prepareTemplates, prepare_gas_templates
 from joblib import Parallel, delayed, dump, load
 
 # Then use system installed version instead

@@ -24,7 +24,7 @@ PURPOSE:
 def setupLogfile(config):
     """Initialise the LOGFILE."""
     welcomeString = "\n\n# ============================================== #\n#{:^48}#\n#{:^48}#\n# ============================================== #\n".format(
-        "THE GIST PIPELINE", "Version " + __version__
+        "THE nGIST PIPELINE", "Version " + __version__
     )
 
     for handler in logging.root.handlers[:]:
