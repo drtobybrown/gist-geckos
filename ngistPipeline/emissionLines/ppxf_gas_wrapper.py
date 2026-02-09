@@ -128,6 +128,31 @@ def run_ppxf(
     # printStatus.progressBar(i, np.max(ubins) + 1, barLength=50)
 
     try:
+        # Make writable copies so we can sanitise in-place
+        galaxy_i = np.array(galaxy_i, dtype=float)
+        noise_i = np.array(noise_i, dtype=float)
+
+        # Remove goodPixels where data or noise is NaN, non-finite, or non-positive
+        # (e.g. from NaN variance channels in MUSE cubes)
+        valid = (
+            np.isfinite(galaxy_i[goodPixels])
+            & np.isfinite(noise_i[goodPixels])
+            & (noise_i[goodPixels] > 0)
+        )
+        goodPixels = goodPixels[valid]
+        if len(goodPixels) < 10:
+            raise ValueError(
+                "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
+                % len(goodPixels)
+            )
+
+        # Replace any remaining NaN in the full arrays with safe values so pPXF
+        # doesn't choke on non-goodPixel entries it may still inspect.
+        nan_gal = ~np.isfinite(galaxy_i)
+        nan_noise = ~np.isfinite(noise_i) | (noise_i <= 0)
+        galaxy_i[nan_gal] = 0.0
+        noise_i[nan_noise] = 1e10
+
         pp = ppxf(
             templates,
             galaxy_i,

@@ -64,6 +64,22 @@ def run_ppxf_firsttime(
     median_log_bin_data = np.nanmedian(log_bin_data)
     log_bin_error = log_bin_error / median_log_bin_data
     log_bin_data = log_bin_data / median_log_bin_data
+
+    # Remove goodPixels where data or error is NaN, non-finite, or non-positive
+    # (e.g. from NaN variance channels in MUSE cubes)
+    valid = (
+        np.isfinite(log_bin_data[goodPixels])
+        & np.isfinite(log_bin_error[goodPixels])
+        & (log_bin_error[goodPixels] > 0)
+    )
+    goodPixels = goodPixels[valid]
+
+    # Replace any remaining NaN in the full arrays with safe values
+    nan_data = ~np.isfinite(log_bin_data)
+    nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
+    log_bin_data[nan_data] = 0.0
+    log_bin_error[nan_err] = 1e10
+
     pp = ppxf(
         templates,
         log_bin_data,
@@ -130,8 +146,32 @@ def run_ppxf(
 
             # Normalise galaxy spectra and noise
             median_log_bin_data = np.nanmedian(log_bin_data)
+            if not np.isfinite(median_log_bin_data) or median_log_bin_data <= 0:
+                raise ValueError(
+                    "spectrum median is not finite and positive (got %s)" % median_log_bin_data
+                )
             log_bin_error = log_bin_error / median_log_bin_data
             log_bin_data = log_bin_data / median_log_bin_data
+
+            # Remove goodPixels where data or error is NaN, non-finite, or non-positive
+            # (e.g. from NaN variance channels in MUSE cubes)
+            valid = (
+                np.isfinite(log_bin_data[goodPixels])
+                & np.isfinite(log_bin_error[goodPixels])
+                & (log_bin_error[goodPixels] > 0)
+            )
+            goodPixels = goodPixels[valid]
+            if len(goodPixels) < 10:
+                raise ValueError(
+                    "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
+                    % len(goodPixels)
+                )
+
+            # Replace any remaining NaN in the full arrays with safe values
+            nan_data = ~np.isfinite(log_bin_data)
+            nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
+            log_bin_data[nan_data] = 0.0
+            log_bin_error[nan_err] = 1e10
 
             # Here add in the extra, 0th step to estimate the dust and print out the E(B-V) map
             # Call PPXF, using an extinction law, no polynomials.

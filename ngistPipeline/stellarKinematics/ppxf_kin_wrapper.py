@@ -58,18 +58,53 @@ def run_ppxf(
     # printStatus.progressBar(i, nbins, barLength=50)
 
     try:
+        # If combined run failed, caller may pass scalar np.nan; treat as first run (full templates)
+        try:
+            use_first_run = len(optimal_template_in) == 1
+        except (TypeError, AttributeError):
+            use_first_run = True
+
+        # Require valid goodpixels and normalisation for PPXF
+        if goodPixels is None or len(goodPixels) < 10:
+            raise ValueError("goodPixels empty or too few pixels for PPXF")
+        median_log_bin_data = np.nanmedian(log_bin_data)
+        if not np.isfinite(median_log_bin_data) or median_log_bin_data <= 0:
+            raise ValueError(
+                "spectrum median is not finite and positive (got %s)" % median_log_bin_data
+            )
 
         # normalise galaxy spectra and noise
-        median_log_bin_data = np.nanmedian(log_bin_data)
         log_bin_error = log_bin_error / median_log_bin_data
         log_bin_data = log_bin_data / median_log_bin_data
 
+        # Remove goodPixels where data or error is NaN, non-finite, or non-positive
+        # (e.g. from NaN variance channels in MUSE cubes)
+        valid = (
+            np.isfinite(log_bin_data[goodPixels])
+            & np.isfinite(log_bin_error[goodPixels])
+            & (log_bin_error[goodPixels] > 0)
+        )
+        goodPixels = goodPixels[valid]
+        if len(goodPixels) < 10:
+            raise ValueError(
+                "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
+                % len(goodPixels)
+            )
+
+        # Replace any remaining NaN in the full arrays with safe values so pPXF
+        # doesn't choke on non-goodPixel entries it may still inspect.
+        nan_data = ~np.isfinite(log_bin_data)
+        nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
+        log_bin_data[nan_data] = 0.0
+        log_bin_error[nan_err] = 1e10  # large error effectively down-weights these pixels
+
         #calculate the snr before the fit (may be used for bias)
-        snr_prefit = np.nanmedian(log_bin_data/log_bin_error)
+        snr_prefit = np.nanmedian(log_bin_data[goodPixels]/log_bin_error[goodPixels])
 
         # Call PPXF for first time to get optimal template
-        if len(optimal_template_in) == 1:
-            printStatus.running("Running pPXF for the first time")
+        if use_first_run:
+            if i == 0:
+                printStatus.running("Running pPXF for the first time")
             pp = ppxf(
                 templates,
                 log_bin_data,
@@ -268,7 +303,11 @@ def run_ppxf(
             snr_postfit,
         )
 
-    except Exception:
+    except Exception as e:
+        if i == 0:
+            logging.warning(
+                "PPXF failed on combined spectrum (or first bin): %s", e, exc_info=True
+            )
         return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
 
 
@@ -449,10 +488,16 @@ def save_ppxf(
     logLamHDU.name = "LOGLAM_TEMPLATE"
 
     # Extension 2: Table HDU with logLam_templates
+    # Ensure 1D array (combined PPXF can fail and return scalar np.nan)
+    opt_comb = optimal_template_comb
+    if np.isscalar(opt_comb) or (isinstance(opt_comb, np.ndarray) and opt_comb.ndim == 0):
+        opt_comb = np.full(optimal_template.shape[1], np.nan, dtype=float)
+    else:
+        opt_comb = np.atleast_1d(opt_comb).astype(float)
     cols = []
     cols.append(
         fits.Column(
-            name="OPTIMAL_TEMPLATE_ALL", format="D", array=optimal_template_comb
+            name="OPTIMAL_TEMPLATE_ALL", format="D", array=opt_comb
         )
     )
     combHDU = fits.BinTableHDU.from_columns(fits.ColDefs(cols))
@@ -669,8 +714,25 @@ def extractStellarKinematics(config):
         0,
         optimal_template_init,
     )
-    # now define the optimal template that we'll use throughout
-    optimal_template_comb = optimal_template_out
+    # If combined run failed, use sentinel so per-bin runs use full template library
+    _valid = (
+        optimal_template_out is not None
+        and not np.isscalar(optimal_template_out)
+        and hasattr(optimal_template_out, "__len__")
+        and len(optimal_template_out) > 1
+    )
+    if _valid and isinstance(optimal_template_out, np.ndarray):
+        _valid = (
+            optimal_template_out.ndim >= 1
+            and np.any(np.isfinite(optimal_template_out))
+        )
+    if not _valid:
+        optimal_template_comb = [0]
+        logging.info(
+            "Combined-spectrum PPXF failed or invalid; per-bin runs will use full template library"
+        )
+    else:
+        optimal_template_comb = optimal_template_out
 
     # ====================
     # Run PPXF

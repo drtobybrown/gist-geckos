@@ -310,8 +310,9 @@ def spatialBinning(binNum, spec, error):
     for i in range(nbins):
         k = bin_idx == i
         av_spec = np.nansum(spec[:, k], axis=1)
-        # error is variance; sum then sqrt for combined sigma
-        av_err_spec = np.sqrt(np.sum(error[:, k], axis=1))
+        # error is variance; nansum then sqrt for combined sigma
+        # (use nansum to handle NaN variance channels, e.g. from MUSE cube gaps)
+        av_err_spec = np.sqrt(np.nansum(error[:, k], axis=1))
         bin_data[:, i] = np.ravel(av_spec)
         bin_error[:, i] = np.ravel(av_err_spec)
         bin_flux[i] = np.mean(av_spec)

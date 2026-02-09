@@ -543,6 +543,10 @@ def saveContLineCube(config):
         if i >= n_bins:
             break
         fitSpec = np.asarray(ppxf_bestfit[i, :])
+        # Skip bins where the CONT fit failed (all zeros or contains non-finite values)
+        if not np.all(np.isfinite(fitSpec)) or np.all(fitSpec == 0):
+            fitSpec_lin_per_bin[i, :] = np.nan
+            continue
         fitSpec_func = CubicSpline(np.exp(logLam), fitSpec, extrapolate=False)
         fitSpec_lin = fitSpec_func(linLam)
         fitSignal_per_bin[i] = np.nanmedian(fitSpec_lin[idx_snr])
