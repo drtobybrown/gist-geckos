@@ -94,9 +94,15 @@ def run_ls(
         data = np.zeros(nindex)
         error = np.zeros(nindex)
         for o in range(nindex):
-            idx = np.where(names == index_names[o])[0]
-            data[o] = indices[idx]
-            error[o] = errors[idx]
+            idx = np.where(np.asarray(names) == index_names[o])[0]
+            if idx.size > 0:
+                val = indices[idx]
+                err_val = errors[idx]
+                data[o] = float(val[0]) if val.size > 0 else np.nan
+                error[o] = float(err_val[0]) if err_val.size > 0 else np.nan
+            else:
+                data[o] = np.nan
+                error[o] = np.nan
 
         if MCMC == True:
             # Run the conversion of LS indices to SSP properties
@@ -127,7 +133,8 @@ def run_ls(
         elif MCMC == False:
             return (indices, errors)
 
-    except Exception:
+    except Exception as e:
+        logging.warning("run_ls bin %i failed: %s", i, e, exc_info=True)
         if MCMC == True:
             return (np.nan, np.nan, np.nan, np.nan)
         elif MCMC == False:

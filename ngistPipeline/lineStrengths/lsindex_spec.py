@@ -182,7 +182,7 @@ def lsindex(ll, flux_in, noise, z, lickfile, plot=0, sims=0, z_err=0):
         if (dll[0] <= bands[0, k]) and (dll[len(dll) - 1] >= bands[5, k]):
             # calculate index value
             index0 = calc_index(bands[:, k], names[k], dll, flux, plot)
-            index[k] = index0[0]
+            index[k] = float(numpy.atleast_1d(index0)[0])
         else:
             # index outside wavelegth range
             index[k] = numpy.nan
@@ -210,7 +210,7 @@ def lsindex(ll, flux_in, noise, z, lickfile, plot=0, sims=0, z_err=0):
                 bands2 = bands[:, k]
                 if (dll[0] <= bands2[0]) and (dll[len(dll) - 1] >= bands2[5]):
                     tmp = calc_index(bands2, names[k], dll, flux_n, 0)
-                    index_noise[k, i] = tmp
+                    index_noise[k, i] = float(numpy.atleast_1d(tmp)[0])
                 else:
                     # index outside wavelength range
                     index_noise[k, i] = numpy.nan

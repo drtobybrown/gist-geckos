@@ -162,7 +162,8 @@ def compute_indices(par, data, model_indices, params, tri):
     vtx, wts = interp_weights(params, input_pt, tri)
     outindices = numpy.zeros(len(data))
     for i in range(len(model_indices[0, :])):
-        outindices[i] = interpolate(model_indices[:, i], vtx, wts)
+        result = interpolate(model_indices[:, i], vtx, wts)
+        outindices[i] = float(numpy.atleast_1d(result)[0])
 
     return outindices
 
