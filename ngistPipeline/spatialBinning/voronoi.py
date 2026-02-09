@@ -70,6 +70,18 @@ def generateSpatialBins(config, cube):
     idxUnmasked = np.where(mask == 0)[0]
     idxMasked = np.where(mask == 1)[0]
 
+    if len(idxUnmasked) == 0:
+        printStatus.updateFailed("Defining the Voronoi bins")
+        print(
+            "No unmasked spaxels remaining. Voronoi binning cannot proceed. "
+            "Check spatial masking (defunct/SNR/maskfile) or input data."
+        )
+        logging.error(
+            "Defining the Voronoi bins failed: no unmasked spaxels. "
+            "All spaxels were rejected by the spatial mask (defunct, SNR, or maskfile)."
+        )
+        return "SKIP"
+
     try:
         # Do the Voronoi binning
         binNum, xNode, yNode, xBar, yBar, sn, nPixels, _ = voronoi_2d_binning(

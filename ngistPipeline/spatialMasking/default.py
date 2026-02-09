@@ -74,25 +74,17 @@ def generateSpatialMask(config, cube):
 
 def maskDefunctSpaxels(cube):
     """
-    Mask defunct spaxels, in particular those containing np.nan's or have a
-    negative median.
+    Mask defunct spaxels: those with all-NaN spectra or non-positive median flux.
+    Spaxels with only some NaNs (e.g. bad pixels) but valid median are kept so
+    that real data with occasional bad pixels is not over-masked.
     """
     spec = cube["spec"]
-    
-    # Select defunct spaxels
-    idx_good = np.where(
-        ~np.logical_or(
-            np.any(np.isnan(spec), axis=0),
-            np.nanmedian(spec, axis=0) <= 0.0,
-        )
-    )[0]
 
-    idx_bad = np.where(
-        np.logical_or(
-            np.any(np.isnan(spec), axis=0),
-            np.nanmedian(spec, axis=0) <= 0.0,
-        )
-    )[0]
+    # Defunct = entirely NaN spectrum OR median flux <= 0 (reject zero/negative)
+    all_nan = np.all(np.isnan(spec), axis=0)
+    median_nonpositive = np.nanmedian(spec, axis=0) <= 0.0
+    idx_bad = np.where(np.logical_or(all_nan, median_nonpositive))[0]
+    idx_good = np.where(~np.logical_or(all_nan, median_nonpositive))[0]
 
     logging.info(
         "Masking defunct spaxels: " + str(len(idx_bad)) + " spaxels are rejected."
@@ -132,7 +124,6 @@ def applySNRThreshold(snr, signal, min_snr, threshold_method="isophote"):
     masked[idx_inside] = False
     masked[idx_outside] = True
 
-    return masked
     return masked
 
 
