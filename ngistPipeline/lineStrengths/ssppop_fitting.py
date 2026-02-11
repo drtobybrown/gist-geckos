@@ -5,9 +5,9 @@ import sys
 import warnings
 
 import emcee
-# from   joblib              import Parallel, delayed
+from   joblib              import Parallel, delayed
 import matplotlib.pyplot as plt
-# import h5py
+import h5py
 import numpy
 import scipy.spatial.qhull as qhull
 from astropy.io import fits
@@ -415,6 +415,9 @@ if __name__ == "__main__":
             nchain,
             plot,
             verbose,
+            i,
+            ncases,
+            "",
         )
         for i in range(ncases)
     )
