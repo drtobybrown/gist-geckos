@@ -114,17 +114,17 @@ def runGIST(dirPath, galindex):
             config["GENERAL"]["INPUT"] = original_input
             config["GENERAL"]["OUTPUT"] = original_output
 
-    # Print configurations
-    _initialise.printConfig(config)
-
-    # Check output directory
-    _initialise.checkOutputDirectory(config)
-
-    # Setup logfile
-    _initialise.setupLogfile(config)
-    sys.excepthook = _initialise.handleUncaughtException
-
     try:
+        # Print configurations
+        _initialise.printConfig(config)
+
+        # Check output directory
+        _initialise.checkOutputDirectory(config)
+
+        # Setup logfile
+        _initialise.setupLogfile(config)
+        sys.excepthook = _initialise.handleUncaughtException
+
         # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
         # - - - - - - - -  P R E P A R A T I O N   M O D U L E S  - - - - - - - - - - -
         # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
