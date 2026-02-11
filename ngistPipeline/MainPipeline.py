@@ -61,6 +61,59 @@ def runGIST(dirPath, galindex):
     config = _initialise.readMasterConfig(dirPath.configFile, galindex)
     config = _initialise.addPathsToConfig(config, dirPath)
 
+    # Pre-flight resource check
+    if not _initialise.checkResources(config):
+        skipGalaxy(config)
+        return None
+
+    # Staging logic
+    use_scratch = False
+    original_input = config["GENERAL"]["INPUT"]
+    original_output = config["GENERAL"]["OUTPUT"]
+    staging_dir = None
+
+    scratch_dir = os.environ.get("SCRATCH_DIR", "/scratch")
+    if os.path.exists(scratch_dir) and os.access(scratch_dir, os.W_OK):
+        try:
+            import tempfile
+            import shutil
+            use_scratch = True
+            run_id = config["GENERAL"]["RUN_ID"]
+            staging_dir = tempfile.mkdtemp(prefix=f"ngist_{run_id}_", dir=scratch_dir)
+            printStatus.module("Staging")
+            printStatus.running(f"Staging input data to {staging_dir}")
+
+            # Copy input file
+            input_filename = os.path.basename(original_input)
+            staged_input = os.path.join(staging_dir, input_filename)
+            shutil.copy2(original_input, staged_input)
+            config["GENERAL"]["INPUT"] = staged_input
+
+            # Copy mask file if present
+            if config.get("SPATIAL_MASKING") and config["SPATIAL_MASKING"].get("MASK"):
+                 mask_filename = config["SPATIAL_MASKING"]["MASK"]
+                 original_mask_path = os.path.join(os.path.dirname(original_input), mask_filename)
+                 if os.path.exists(original_mask_path):
+                     shutil.copy2(original_mask_path, os.path.join(staging_dir, mask_filename))
+
+            # Setup staged output
+            staged_output = os.path.join(staging_dir, "output", run_id)
+            if not os.path.exists(os.path.dirname(staged_output)):
+                os.makedirs(os.path.dirname(staged_output))
+            # MainPipeline expects RUN_ID logic in output path usually, handled by addPathsToConfig.
+            # Here config["GENERAL"]["OUTPUT"] is full path to RUN_ID folder.
+            config["GENERAL"]["OUTPUT"] = staged_output
+
+            printStatus.updateDone(f"Staging complete. Running in {staging_dir}")
+        except Exception as e:
+            logging.error(f"Staging failed: {e}")
+            printStatus.warning("Staging failed, falling back to direct I/O")
+            if staging_dir and os.path.exists(staging_dir):
+                shutil.rmtree(staging_dir)
+            use_scratch = False
+            config["GENERAL"]["INPUT"] = original_input
+            config["GENERAL"]["OUTPUT"] = original_output
+
     # Print configurations
     _initialise.printConfig(config)
 
@@ -71,85 +124,114 @@ def runGIST(dirPath, galindex):
     _initialise.setupLogfile(config)
     sys.excepthook = _initialise.handleUncaughtException
 
-    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    # - - - - - - - -  P R E P A R A T I O N   M O D U L E S  - - - - - - - - - - -
-    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    try:
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+        # - - - - - - - -  P R E P A R A T I O N   M O D U L E S  - - - - - - - - - - -
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-    # - - - - - READ_DATA MODULE - - - - -
+        # - - - - - READ_DATA MODULE - - - - -
 
-    cube = _readData.readData_Module(config)
-    if cube == "SKIP":
-        skipGalaxy(config)
-        return None
+        cube = _readData.readData_Module(config)
+        if cube == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - SPATIAL MASKING MODULE - - - - -
+        # - - - - - SPATIAL MASKING MODULE - - - - -
 
-    _ = _spatialMasking.spatialMasking_Module(config, cube)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _spatialMasking.spatialMasking_Module(config, cube)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - SPATIAL BINNING MODULE - - - - -
+        # - - - - - SPATIAL BINNING MODULE - - - - -
 
-    _ = _spatialBinning.spatialBinning_Module(config, cube)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _spatialBinning.spatialBinning_Module(config, cube)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - PREPARE SPECTRA MODULE - - - - -
+        # - - - - - PREPARE SPECTRA MODULE - - - - -
 
-    _ = _prepareSpectra.prepareSpectra_Module(config, cube)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _prepareSpectra.prepareSpectra_Module(config, cube)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    del cube
+        del cube
 
-    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    # - - - - - - - - - -   A N A L Y S I S   M O D U L E S   - - - - - - - - - - -
-    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+        # - - - - - - - - - -   A N A L Y S I S   M O D U L E S   - - - - - - - - - - -
+        # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-    # - - - - - STELLAR KINEMATICS MODULE - - - - -
+        # - - - - - STELLAR KINEMATICS MODULE - - - - -
 
-    _ = _stellarKinematics.stellarKinematics_Module(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _stellarKinematics.stellarKinematics_Module(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - CONTINUUM CUBE MODULE - - - - -
+        # - - - - - CONTINUUM CUBE MODULE - - - - -
 
-    _ = _continuumCube.continuumCube_Module(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _continuumCube.continuumCube_Module(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - EMISSION LINES MODULE - - - - -
+        # - - - - - EMISSION LINES MODULE - - - - -
 
-    _ = _emissionLines.emissionLines_Module(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _emissionLines.emissionLines_Module(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - STAR FORMATION HISTORIES MODULE - - - - -
+        # - - - - - STAR FORMATION HISTORIES MODULE - - - - -
 
-    _ = _starFormationHistories.starFormationHistories_Module(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _starFormationHistories.starFormationHistories_Module(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - LINE STRENGTHS MODULE - - - - -
+        # - - - - - LINE STRENGTHS MODULE - - - - -
 
-    _ = _lineStrengths.lineStrengths_Module(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _lineStrengths.lineStrengths_Module(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
 
-    # - - - - - USERS  MODULE - - - - -
+        # - - - - - USERS  MODULE - - - - -
 
-    _ = _userModules.user_Modules(config)
-    if _ == "SKIP":
-        skipGalaxy(config)
-        return None
+        _ = _userModules.user_Modules(config)
+        if _ == "SKIP":
+            skipGalaxy(config)
+            return None
+
+    finally:
+        # Copy back results if staging was used
+        if use_scratch and os.path.exists(config["GENERAL"]["OUTPUT"]):
+            try:
+                printStatus.running(f"Copying results back to {original_output}")
+                import shutil
+                if not os.path.exists(original_output):
+                    os.makedirs(original_output)
+
+                # Copy contents
+                for item in os.listdir(config["GENERAL"]["OUTPUT"]):
+                    s = os.path.join(config["GENERAL"]["OUTPUT"], item)
+                    d = os.path.join(original_output, item)
+                    if os.path.isdir(s):
+                        if os.path.exists(d): shutil.rmtree(d)
+                        shutil.copytree(s, d)
+                    else:
+                        shutil.copy2(s, d)
+
+                printStatus.updateDone("Results copied back.")
+                # Only clean up if copy back succeeded
+                if staging_dir and os.path.exists(staging_dir):
+                    shutil.rmtree(staging_dir)
+            except Exception as e:
+                printStatus.updateFailed(f"Failed to copy results back: {e}")
+                logging.error(f"Failed to copy results back: {e}")
+                printStatus.warning(f"Data remains in staging directory: {staging_dir}")
 
 
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -

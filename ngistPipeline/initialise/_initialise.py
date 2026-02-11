@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import sys
 import time
 
@@ -154,6 +155,46 @@ def checkConfig(config, loadedConfig):
         message = "The configurations set in MasterConfig and those saved in the output directory are not identical. Please double-check your configurations. The analysis will continue with the configurations from MasterConfig, however, this does not imply that any previous results are compatible with these configurations."
         printStatus.warning(message)
     return None
+
+
+def checkResources(config):
+    """
+    Check if resources (disk space, memory) are sufficient.
+    """
+    printStatus.running("Checking resources")
+
+    # Check input existence
+    if not os.path.exists(config["GENERAL"]["INPUT"]):
+        printStatus.failed(f"Input file not found: {config['GENERAL']['INPUT']}")
+        return False
+
+    # Check disk space in output directory
+    output_dir = config["GENERAL"]["OUTPUT"]
+    # If output dir doesn't exist, check parent
+    check_dir = output_dir
+    while not os.path.exists(check_dir):
+        parent = os.path.dirname(check_dir)
+        if not parent or parent == check_dir: # reached root or invalid
+            check_dir = "." # fall back to current dir
+            break
+        check_dir = parent
+
+    if os.path.exists(check_dir):
+        try:
+            total, used, free = shutil.disk_usage(check_dir)
+            # Estimate required space: Input size * 10?
+            if os.path.exists(config["GENERAL"]["INPUT"]):
+                input_size = os.path.getsize(config["GENERAL"]["INPUT"])
+                required = input_size * 10
+                if free < required:
+                    printStatus.warning(f"Low disk space! Free: {free/1024**3:.2f} GB, Estimated required: {required/1024**3:.2f} GB")
+            else:
+                 printStatus.warning("Input file missing during resource check.")
+        except Exception as e:
+            logging.warning(f"Failed to check disk usage: {e}")
+
+    printStatus.updateDone("Resources checked")
+    return True
 
 
 def printConfig(config):

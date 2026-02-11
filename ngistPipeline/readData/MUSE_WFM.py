@@ -2,6 +2,7 @@ import logging
 import os
 
 import extinction
+import fitsio
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
@@ -49,51 +50,65 @@ def readCube(config):
     logging.info("Reading the MUSE-WFM cube: " + config["GENERAL"]["INPUT"])
 
     # Get shape from header to trim wavelength before loading full cube (saves memory)
-    with fits.open(config["GENERAL"]["INPUT"], memmap=True, lazy_load_hdus=True) as hdu:
-        if len(hdu) == 1:
+    with fitsio.FITS(config["GENERAL"]["INPUT"]) as fits_obj:
+        if len(fits_obj) == 1:
             ihdu = 0
             printStatus.running("data in first HDU")
         else:
             ihdu = 1
 
-        hdr = hdu[ihdu].header
+        hdr = fits_obj[ihdu].read_header()
         # Shape (nwave, ny, nx) from FITS NAXIS
         s = (hdr["NAXIS3"], hdr["NAXIS2"], hdr["NAXIS1"])
-        wcshdr = WCS(hdr).to_header()
 
-    # Compute wavelength and trim index before loading data
-    if "CD3_3" not in hdr.keys():
-        cdelt2 = hdr["CDELT3"]
-        cdelt3 = hdr["CDELT3"]
-    else:
-        cdelt2 = hdr["CD2_2"]
-        cdelt3 = hdr["CD3_3"]
-    wave_full = hdr["CRVAL3"] + (np.arange(s[0])) * cdelt3
-    wave_full = wave_full / (1 + config["GENERAL"]["REDSHIFT"])
-    lmin = config["READ_DATA"]["LMIN_TOT"]
-    lmax = config["READ_DATA"]["LMAX_TOT"]
-    idx = np.where(np.logical_and(wave_full >= lmin, wave_full <= lmax))[0]
+        # Create astropy Header for WCS
+        # fitsio header can be converted to dict, which astropy Header accepts
+        # but we need to ensure keys are strings
+        hdr_dict = {k: hdr[k] for k in hdr} # Ensure plain dict
+        # WCS needs astropy header
+        astro_hdr = fits.Header(hdr_dict)
+        wcshdr = WCS(astro_hdr).to_header()
 
-    # Read only the wavelength slice to avoid holding full cube in memory
-    with fits.open(config["GENERAL"]["INPUT"], memmap=True, lazy_load_hdus=True) as hdu:
-        data = hdu[ihdu].data
-        data_slice = np.asarray(data[idx, :, :], dtype=np.float64)
-        spec = np.reshape(data_slice, [len(idx), s[1] * s[2]])
-
-        # Read the variance spectra if available. Otherwise estimate with der_snr
-        if len(hdu) >= 3:
-            logging.info("Reading the error (variance) spectra from the cube")
-            stat = hdu[2].data
-            stat_slice = np.asarray(stat[idx, :, :], dtype=np.float64)
-            espec = np.reshape(stat_slice, [len(idx), s[1] * s[2]])
+        # Compute wavelength and trim index before loading data
+        if "CD3_3" not in hdr:
+            cdelt2 = hdr["CDELT3"]
+            cdelt3 = hdr["CDELT3"]
         else:
-            logging.info(
-                "No error (variance) extension found. Estimating the variance spectra with the der_snr algorithm"
-            )
-            noise_per_spaxel = der_snr.der_snr_2d(spec)
-            espec = np.broadcast_to(
-                noise_per_spaxel.reshape(1, -1), spec.shape
-            ).copy()
+            cdelt2 = hdr["CD2_2"]
+            cdelt3 = hdr["CD3_3"]
+
+        wave_full = hdr["CRVAL3"] + (np.arange(s[0])) * cdelt3
+        wave_full = wave_full / (1 + config["GENERAL"]["REDSHIFT"])
+        lmin = config["READ_DATA"]["LMIN_TOT"]
+        lmax = config["READ_DATA"]["LMAX_TOT"]
+        idx = np.where(np.logical_and(wave_full >= lmin, wave_full <= lmax))[0]
+
+        # Read only the wavelength slice to avoid holding full cube in memory
+        if len(idx) > 0:
+            start = idx[0]
+            end = idx[-1] + 1
+
+            data_slice = fits_obj[ihdu][start:end, :, :]
+            data_slice = np.asarray(data_slice, dtype=np.float64)
+            spec = np.reshape(data_slice, [len(idx), s[1] * s[2]])
+
+            # Read the variance spectra if available. Otherwise estimate with der_snr
+            if len(fits_obj) >= 3:
+                logging.info("Reading the error (variance) spectra from the cube")
+                stat_slice = fits_obj[2][start:end, :, :]
+                stat_slice = np.asarray(stat_slice, dtype=np.float64)
+                espec = np.reshape(stat_slice, [len(idx), s[1] * s[2]])
+            else:
+                logging.info(
+                    "No error (variance) extension found. Estimating the variance spectra with the der_snr algorithm"
+                )
+                noise_per_spaxel = der_snr.der_snr_2d(spec)
+                espec = np.broadcast_to(
+                    noise_per_spaxel.reshape(1, -1), spec.shape
+                ).copy()
+        else:
+            spec = np.zeros((0, s[1] * s[2]))
+            espec = np.zeros((0, s[1] * s[2]))
 
     wave = wave_full[idx]
 
