@@ -130,7 +130,9 @@ def savefitsmaps(module_id, method_id, outdir=""):
 
     # update WCS
     # Convert fitsio header to dict, then to astropy Header
-    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr})
+    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr.keys()})
+    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr.keys()})
+    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr.keys()})
     wcs = WCS(astro_oldwcshdr).celestial
     newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
     newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())

@@ -63,8 +63,8 @@ def readCube(config):
 
         # Create astropy Header for WCS
         # fitsio header can be converted to dict, which astropy Header accepts
-        # but we need to ensure keys are strings
-        hdr_dict = {k: hdr[k] for k in hdr} # Ensure plain dict
+        # but we need to ensure keys are strings. Use keys() to avoid fragile iteration.
+        hdr_dict = {k: hdr[k] for k in hdr.keys()} # Ensure plain dict
         # WCS needs astropy header
         astro_hdr = fits.Header(hdr_dict)
         wcshdr = WCS(astro_hdr).to_header()
