@@ -1,6 +1,7 @@
 import logging
 import os
 
+import fitsio
 import h5py
 import numpy as np
 from astropy.io import fits
@@ -14,12 +15,13 @@ def get_input_bunit(config):
     Used to propagate flux/data units to HDF5 metadata. Returns None if not found.
     """
     try:
-        with fits.open(config["GENERAL"]["INPUT"], memmap=True) as h:
+        with fitsio.FITS(config["GENERAL"]["INPUT"]) as f:
             for ext in (0, 1, 2):
-                if ext >= len(h):
+                if ext >= len(f):
                     continue
-                if "BUNIT" in h[ext].header:
-                    return str(h[ext].header["BUNIT"]).strip()
+                hdr = f[ext].read_header()
+                if "BUNIT" in hdr:
+                    return str(hdr["BUNIT"]).strip()
     except Exception:
         pass
     return None
@@ -38,7 +40,8 @@ def prepSpectra(config, cube):
         os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
         + "_mask.fits"
     )
-    mask = fits.open(maskfile, memmap=True)[1].data.MASK
+    with fitsio.FITS(maskfile) as mhdu:
+        mask = mhdu[1].read()["MASK"]
     idxUnmasked = np.where(mask == 0)[0]
     idxMasked = np.where(mask == 1)[0]
 
@@ -47,7 +50,9 @@ def prepSpectra(config, cube):
         os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
         + "_table.fits"
     )
-    binNum = fits.open(tablefile, mem_map=True)[1].data.BIN_ID[idxUnmasked]
+    with fitsio.FITS(tablefile) as tablehdu:
+         data = tablehdu[1].read()
+         binNum = data["BIN_ID"][idxUnmasked]
 
     # Apply spatial bins to linear spectra
     bin_data, bin_error, bin_flux = applySpatialBins(

@@ -1,6 +1,7 @@
 import logging
 import os
 
+import fitsio
 import numpy as np
 from astropy.io import fits
 from printStatus import printStatus
@@ -147,11 +148,11 @@ def applyMaskFile(config, cube):
         )
 
         if os.path.isfile(maskfile) == True:
-            hdu = fits.open(maskfile)
-            if len(hdu) == 1:
-                mask = hdu[0].data
-            else:
-                mask = hdu[1].data
+            with fitsio.FITS(maskfile) as hdu:
+                if len(hdu) == 1:
+                    mask = hdu[0].read()
+                else:
+                    mask = hdu[1].read()
             s = np.shape(mask)
             mask = np.reshape(mask, s[0] * s[1])
 
@@ -184,42 +185,29 @@ def saveMask(combinedMask, maskedDefunct, maskedSNR, maskedMask, config):
     )
     printStatus.running("Writing: " + config["GENERAL"]["RUN_ID"] + "_mask.fits")
 
-    # Primary HDU
-    priHDU = fits.PrimaryHDU()
+    if os.path.exists(outfits):
+        os.remove(outfits)
 
-    # Table HDU with output data
-    # This is an integer array! 0 means unmasked, 1 means masked!
-    cols = []
-    cols.append(
-        fits.Column(
-            name="MASK", format="I", array=np.array(combinedMask, dtype=np.int32)
-        )
-    )
-    cols.append(
-        fits.Column(
-            name="MASK_DEFUNCT",
-            format="I",
-            array=np.array(maskedDefunct, dtype=np.int32),
-        )
-    )
-    cols.append(
-        fits.Column(
-            name="MASK_SNR", format="I", array=np.array(maskedSNR, dtype=np.int32)
-        )
-    )
-    cols.append(
-        fits.Column(
-            name="MASK_FILE", format="I", array=np.array(maskedMask, dtype=np.int32)
-        )
-    )
-    tbhdu = fits.BinTableHDU.from_columns(fits.ColDefs(cols))
-    tbhdu.name = "MASKFILE"
+    # Create numpy structured array for table
+    n = len(combinedMask)
+    dt = [
+        ("MASK", np.int32),
+        ("MASK_DEFUNCT", np.int32),
+        ("MASK_SNR", np.int32),
+        ("MASK_FILE", np.int32)
+    ]
+    data = np.zeros(n, dtype=dt)
+    data["MASK"] = np.array(combinedMask, dtype=np.int32)
+    data["MASK_DEFUNCT"] = np.array(maskedDefunct, dtype=np.int32)
+    data["MASK_SNR"] = np.array(maskedSNR, dtype=np.int32)
+    data["MASK_FILE"] = np.array(maskedMask, dtype=np.int32)
 
-    # Create HDU list and write to file
-    tbhdu.header["COMMENT"] = "Value 0  -->  unmasked"
-    tbhdu.header["COMMENT"] = "Value 1  -->  masked"
-    HDUList = fits.HDUList([priHDU, tbhdu])
-    HDUList.writeto(outfits, overwrite=True)
+    with fitsio.FITS(outfits, 'rw') as f:
+         # Primary
+         f.write(None)
+         # Table
+         header = {"EXTNAME": "MASKFILE"}
+         f.write(data, header=header)
 
     printStatus.updateDone("Writing: " + config["GENERAL"]["RUN_ID"] + "_mask.fits")
     logging.info("Wrote mask file: " + outfits)

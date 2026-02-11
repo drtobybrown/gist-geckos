@@ -2,6 +2,7 @@ import functools
 import logging
 import os
 
+import fitsio
 import numpy as np
 import scipy.spatial.distance as dist
 from astropy.io import fits
@@ -66,7 +67,8 @@ def generateSpatialBins(config, cube):
         os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
         + "_mask.fits"
     )
-    mask = fits.open(maskfile, memmap=True)[1].data.MASK
+    with fitsio.FITS(maskfile) as mhdu:
+         mask = mhdu[1].read()["MASK"]
     idxUnmasked = np.where(mask == 0)[0]
     idxMasked = np.where(mask == 1)[0]
 
@@ -237,26 +239,7 @@ def save_table(
     wcshdr,
 ):
     """
-    Save all relevant information about the Voronoi binning to disk. In
-    particular, this allows to later match spaxels and their corresponding bins.
-
-    Args:
-        config (dict): Configuration settings.
-        x (ndarray): X-coordinates of the spaxels.
-        y (ndarray): Y-coordinates of the spaxels.
-        signal (ndarray): Flux values of the spaxels.
-        snr (ndarray): Signal-to-noise ratio values of the spaxels.
-        binNum_new (ndarray): Array of bin IDs for each spaxel.
-        ubins (ndarray): Unique bin IDs.
-        xNode (ndarray): X-coordinates of the bin nodes.
-        yNode (ndarray): Y-coordinates of the bin nodes.
-        sn (ndarray): Signal-to-noise ratio values of the bins.
-        nPixels (ndarray): Number of spaxels in each bin.
-        pixelsize (float): Size of each pixel.
-        wcshdr (Header): WCS header information.
-
-    Returns:
-        None
+    Save all relevant information about the Voronoi binning to disk.
     """
     outfits_table = (
         os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
@@ -278,31 +261,48 @@ def save_table(
         sn_new[idx] = sn[i]
         nPixels_new[idx] = nPixels[i]
 
-    # Primary HDU
-    priHDU = fits.PrimaryHDU()
-    # Table HDU with output data
-    cols = []
-    cols.append(fits.Column(name="ID", format="J", array=np.arange(len(x))))
-    cols.append(fits.Column(name="BIN_ID", format="J", array=binNum_new))
-    cols.append(fits.Column(name="X", format="D", array=x))
-    cols.append(fits.Column(name="Y", format="D", array=y))
-    cols.append(fits.Column(name="FLUX", format="D", array=signal))
-    cols.append(fits.Column(name="SNR", format="D", array=snr))
-    cols.append(fits.Column(name="XBIN", format="D", array=xNode_new))
-    cols.append(fits.Column(name="YBIN", format="D", array=yNode_new))
-    cols.append(fits.Column(name="SNRBIN", format="D", array=sn_new))
-    cols.append(fits.Column(name="NSPAX", format="J", array=nPixels_new))
+    if os.path.exists(outfits_table):
+        os.remove(outfits_table)
 
-    tbhdu = fits.BinTableHDU.from_columns(fits.ColDefs(cols))
-    tbhdu.name = "TABLE"
+    # Create numpy structured array for table
+    n = len(x)
+    dt = [
+        ("ID", np.int32),
+        ("BIN_ID", np.int32),
+        ("X", np.float64),
+        ("Y", np.float64),
+        ("FLUX", np.float64),
+        ("SNR", np.float64),
+        ("XBIN", np.float64),
+        ("YBIN", np.float64),
+        ("SNRBIN", np.float64),
+        ("NSPAX", np.int32)
+    ]
+    data = np.zeros(n, dtype=dt)
+    data["ID"] = np.arange(n, dtype=np.int32)
+    data["BIN_ID"] = binNum_new.astype(np.int32)
+    data["X"] = x.astype(np.float64)
+    data["Y"] = y.astype(np.float64)
+    data["FLUX"] = signal.astype(np.float64)
+    data["SNR"] = snr.astype(np.float64)
+    data["XBIN"] = xNode_new.astype(np.float64)
+    data["YBIN"] = yNode_new.astype(np.float64)
+    data["SNRBIN"] = sn_new.astype(np.float64)
+    data["NSPAX"] = nPixels_new.astype(np.int32)
 
-    # create empty imageHDU with wcs header info
-    imghdu = fits.ImageHDU(data=None, header=wcshdr)
+    with fitsio.FITS(outfits_table, 'rw') as f:
+         # Primary
+         # Add PIXSIZE to primary header
+         prim_header = {"PIXSIZE": pixelsize}
+         f.write(None, header=prim_header)
 
-    # Create HDU list and write to file
-    HDUList = fits.HDUList([priHDU, tbhdu, imghdu])
-    HDUList.writeto(outfits_table, overwrite=True)
-    fits.setval(outfits_table, "PIXSIZE", value=pixelsize)
+         # Table
+         f.write(data, extname="TABLE")
+
+         # ImageHDU with WCS
+         # wcshdr is astropy Header. Convert to dict.
+         wcs_header_dict = {k: v for k, v in wcshdr.items()}
+         f.write(np.zeros((1,1), dtype=np.float32), header=wcs_header_dict)
 
     printStatus.updateDone("Writing: " + config["GENERAL"]["RUN_ID"] + "_table.fits")
     logging.info("Wrote Voronoi table: " + outfits_table)
