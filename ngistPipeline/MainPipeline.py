@@ -233,6 +233,10 @@ def runGIST(dirPath, galindex):
                 logging.error(f"Failed to copy results back: {e}")
                 printStatus.warning(f"Data remains in staging directory: {staging_dir}")
 
+            # Restore config paths so finalization steps (and any future logic) use the persistent locations
+            config["GENERAL"]["INPUT"] = original_input
+            config["GENERAL"]["OUTPUT"] = original_output
+
 
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     # - - - - - - - -  F I N A L I S E   T H E   A N A L Y S I S  - - - - - - - - -
