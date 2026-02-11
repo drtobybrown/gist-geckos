@@ -5,12 +5,11 @@ import time
 import h5py
 import numpy as np
 from astropy.io import ascii, fits
-from joblib import Parallel, delayed
 from ppxf.ppxf_util import gaussian_filter1d
 from printStatus import printStatus
-from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.lineStrengths import lsindex_spec as lsindex
 from ngistPipeline.lineStrengths import ssppop_fitting as ssppop
 
@@ -317,6 +316,27 @@ def log_unbinning(lamRange, spec, oversample=1, flux=True):
     return (specNew, lamNew)
 
 
+def _ls_bin_worker(bin_idx, shared, params):
+    """Module-level worker for BatchExecutor: line-strength measurement for one bin."""
+    return run_ls(
+        params["wave"],
+        shared["spec"][bin_idx, :].copy(),
+        shared["espec"][bin_idx, :].copy(),
+        shared["redshift"][bin_idx, :].copy(),
+        params["config"],
+        params["lickfile"],
+        params["names"],
+        params["index_names"],
+        params["model_indices"],
+        params["params_model"],
+        params["tri"],
+        params["labels"],
+        params["nbins"],
+        bin_idx,
+        params["MCMC"],
+    )
+
+
 def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
     """
     Starts the line strength analysis. Data is read in, emission-subtracted
@@ -526,57 +546,44 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
         printStatus.running("Running lineStrengths in parallel mode")
         logging.info("Running lineStrengths in parallel mode")
 
-        # Define a function to encapsulate the work done in the loop
-        def worker(chunk):
-            """
-            Apply run_ls() to a chunk of data and return the results.
+        shared_arrays = {
+            "spec": spec,
+            "espec": espec,
+            "redshift": redshift,
+        }
+        ls_params = {
+            "wave": wave,
+            "config": config,
+            "lickfile": lickfile,
+            "names": names,
+            "index_names": index_names,
+            "model_indices": model_indices,
+            "params_model": params,
+            "tri": tri,
+            "labels": labels,
+            "nbins": nbins,
+            "MCMC": MCMC,
+        }
 
-            Args:
-                chunk (list): A list of indices representing the data chunk to process.
+        wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
+        executor = BatchExecutor(
+            ncpu=config["GENERAL"]["NCPU"],
+            wave_size=wave_size,
+        )
+        ppxf_tmp = executor.run(
+            worker_fn=_ls_bin_worker,
+            shared_arrays=shared_arrays,
+            params=ls_params,
+            bin_indices=np.arange(nbins),
+            desc="LS measurement",
+            fail_value=None,
+        )
 
-            Returns:
-                list: A list of results obtained from processing the chunk.
-            """
-            results = []
-            for i in chunk:
-                result = run_ls(
-                    wave,
-                    spec[i, :],
-                    espec[i, :],
-                    redshift[i, :],
-                    config,
-                    lickfile,
-                    names,
-                    index_names,
-                    model_indices,
-                    params,
-                    tri,
-                    labels,
-                    nbins,
-                    i,
-                    MCMC,
-                )
-                results.append(result)
-            return results
-
-        # Prepare the folder where the memmap will be dumped
-        memmap_folder = "/scratch" if os.access("/scratch", os.W_OK) else config["GENERAL"]["OUTPUT"]
-        
-        # Use joblib to parallelize the work
-        max_nbytes = None  # max array size before memory mapping is triggered (None = disabled memory mapping, see https://github.com/scikit-learn-contrib/hdbscan/pull/495#issue-1014324032)
-        chunk_size = max(1, nbins // (config["GENERAL"]["NCPU"] * 10))
-        chunks = [range(i, min(i + chunk_size, nbins)) for i in range(0, nbins, chunk_size)]
-        parallel_configs = {"n_jobs": config["GENERAL"]["NCPU"], "max_nbytes": max_nbytes, "temp_folder": memmap_folder, "mmap_mode": "c", "return_as":"generator"}
-        ppxf_tmp = list(tqdm(Parallel(**parallel_configs)(delayed(worker)(chunk) for chunk in chunks),
-                        total=len(chunks), desc="Processing chunks", ascii=" #", unit="chunk"))
-
-        # Flatten the results
-        ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
-        
-        for i in range(0, nbins): 
-            ls_indices[i, :], ls_errors[i, :], *extra = ppxf_tmp[i]
-            if MCMC == True:
-                vals[i, :], percentile[i, :, :] = extra
+        for i in range(nbins):
+            if ppxf_tmp[i] is not None:
+                ls_indices[i, :], ls_errors[i, :], *extra = ppxf_tmp[i]
+                if MCMC == True:
+                    vals[i, :], percentile[i, :, :] = extra
 
         printStatus.updateDone(
             "Running lineStrengths in parallel mode", progressbar=False

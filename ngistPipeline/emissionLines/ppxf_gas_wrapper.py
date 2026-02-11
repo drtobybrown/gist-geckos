@@ -6,13 +6,12 @@ import h5py
 import numpy as np
 from astropy import table
 from astropy.io import fits
-from joblib import Parallel, delayed, dump, load
 # Then use system installed version instead
 from ppxf.ppxf import ppxf
 from printStatus import printStatus
-from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import (_prepareTemplates,
                                            prepare_gas_templates)
 
@@ -741,6 +740,30 @@ def save_ppxf_emlines(
     logging.info("Wrote: " + outfits_ppxf)
 
 
+def _gas_bin_worker(bin_idx, shared, params):
+    """Module-level worker for BatchExecutor: emission line fit for one bin."""
+    return run_ppxf(
+        shared["templates"],
+        shared["spectra"][:, bin_idx].copy(),
+        shared["error"][:, bin_idx].copy(),
+        params["velscale"],
+        params["start"][bin_idx],
+        params["goodPixels_gas"].copy(),
+        params["tpl_comp"],
+        params["moments"],
+        params["offset"],
+        params["mdeg"],
+        params["fixed"][bin_idx],
+        params["velscale_ratio"],
+        params["tied"],
+        params["gas_comp"],
+        params["gas_names"],
+        bin_idx,
+        params["nbins"],
+        params["ubins"],
+    )
+
+
 def performEmissionLineAnalysis(config):  # This is your main emission line fitting loop
     # print("")
     # print("\033[0;37m"+" - - - - - Running Emission Lines Fitting - - - - - "+"\033[0;39m")
@@ -1121,61 +1144,45 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         printStatus.running("Running PPXF for emission lines analysis in parallel mode")
         logging.info("Running PPXF for emission lines analysis in parallel mode")
 
-        # Prepare the folder where the memmap will be dumped
-        memmap_folder = "/scratch" if os.access("/scratch", os.W_OK) else config["GENERAL"]["OUTPUT"]
+        shared_arrays = {
+            "templates": templates,
+            "spectra": spectra,
+            "error": error,
+        }
+        params = {
+            "velscale": velscale,
+            "start": start,
+            "goodPixels_gas": goodPixels_gas,
+            "tpl_comp": tpl_comp,
+            "moments": moments,
+            "offset": offset,
+            "mdeg": emi_mpol_deg,
+            "fixed": fixed,
+            "velscale_ratio": velscale_ratio,
+            "tied": tied,
+            "gas_comp": gas_comp,
+            "gas_names": gas_names,
+            "nbins": nbins,
+            "ubins": ubins,
+        }
+        fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan,
+                      np.nan, np.nan, np.nan, np.nan, np.nan)
 
-        # dump the arrays and load as memmap
-        templates_filename_memmap = memmap_folder + "/templates_memmap.tmp"
-        dump(templates, templates_filename_memmap)
-        templates = load(templates_filename_memmap, mmap_mode='r')
-        
-        spectra_filename_memmap = memmap_folder + "/spectra_memmap.tmp"
-        dump(spectra, spectra_filename_memmap)
-        spectra = load(spectra_filename_memmap, mmap_mode='r')
-        
-        error_filename_memmap = memmap_folder + "/error_memmap.tmp"
-        dump(error, error_filename_memmap)
-        error = load(error_filename_memmap, mmap_mode='r')
+        wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
+        executor = BatchExecutor(
+            ncpu=config["GENERAL"]["NCPU"],
+            wave_size=wave_size,
+        )
+        ppxf_tmp = executor.run(
+            worker_fn=_gas_bin_worker,
+            shared_arrays=shared_arrays,
+            params=params,
+            bin_indices=np.arange(nbins),
+            desc="GAS ppxf",
+            fail_value=fail_value,
+        )
 
-        # Define a function to encapsulate the work done in the loop
-        def worker(chunk, templates):
-            results = []
-            for i in chunk:
-                result = run_ppxf(
-                    templates,
-                    spectra[:, i],
-                    error[:, i],
-                    velscale,
-                    start[i],
-                    goodPixels_gas,
-                    tpl_comp,
-                    moments,
-                    offset,
-                    emi_mpol_deg,
-                    fixed[i],
-                    velscale_ratio,
-                    tied,
-                    gas_comp,
-                    gas_names,
-                    i,
-                    nbins,
-                    ubins,
-                )
-                results.append(result)
-            return results
-
-        # Use joblib to parallelize the work
-        max_nbytes = "1M" # max array size before memory mapping is triggered
-        chunk_size = max(1, nbins // (config["GENERAL"]["NCPU"] * 10))
-        chunks = [range(i, min(i + chunk_size, nbins)) for i in range(0, nbins, chunk_size)]
-        parallel_configs = {"n_jobs": config["GENERAL"]["NCPU"], "max_nbytes": max_nbytes, "temp_folder": memmap_folder, "mmap_mode": "c", "return_as":"generator"}
-        ppxf_tmp = list(tqdm(Parallel(**parallel_configs)(delayed(worker)(chunk, templates) for chunk in chunks),
-                        total=len(chunks), desc="Processing chunks", ascii=" #", unit="chunk"))
-
-        # Flatten the results
-        ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
-
-        for i in range(0, nbins):
+        for i in range(nbins):
             gas_kinematics[i, :, :] = ppxf_tmp[i][0]
             gas_kinematics_err[i, :, :] = ppxf_tmp[i][1]
             chi2[i] = ppxf_tmp[i][2]
@@ -1187,11 +1194,6 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
             stkin_err[i, :] = ppxf_tmp[i][9]
 
         printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
-
-        # Remove the memory-mapped files
-        os.remove(templates_filename_memmap)
-        os.remove(spectra_filename_memmap)
-        os.remove(error_filename_memmap)
 
     elif config["GENERAL"]["PARALLEL"] == False:
         printStatus.running("Running PPXF in serial mode")

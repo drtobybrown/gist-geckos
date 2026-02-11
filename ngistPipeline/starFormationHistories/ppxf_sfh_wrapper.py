@@ -8,13 +8,12 @@ import numpy as np
 import ppxf as ppxf_package
 from astropy.io import fits
 from astropy.stats import biweight_location
-from joblib import Parallel, delayed, dump, load
 from packaging import version
 from ppxf.ppxf import ppxf
 from printStatus import printStatus
-from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import _prepareTemplates
 
 robust_sigma = _auxiliary.robust_sigma
@@ -660,6 +659,37 @@ def save_sfh(
     logging.info("Wrote: " + outfits_sfh)
 
 
+def _sfh_bin_worker(bin_idx, shared, params):
+    """Module-level worker for BatchExecutor: SFH fit for one bin."""
+    return run_ppxf(
+        shared["templates"],
+        shared["bin_data"][:, bin_idx].copy(),
+        shared["noise"][:, bin_idx].copy(),
+        params["velscale"],
+        shared["start"][bin_idx, :].copy(),
+        params["goodPixels_sfh"].copy(),
+        params["nmoments"],
+        params["offset"],
+        params["degree"],
+        params["mdeg"],
+        params["regul_err"],
+        params["doclean"],
+        params["fixed"],
+        params["velscale_ratio"],
+        params["npix"],
+        params["ncomb"],
+        params["nbins"],
+        bin_idx,
+        params["optimal_template_comb"],
+        params["EBV_init"],
+        params["logLam"],
+        params["nsims"],
+        params["logAge_grid"],
+        params["metal_grid"],
+        params["alpha_grid"],
+    )
+
+
 def extractStarFormationHistories(config):
     """
     Starts the computation of non-parametric star-formation histories with
@@ -854,69 +884,53 @@ def extractStarFormationHistories(config):
         printStatus.running("Running PPXF in parallel mode")
         logging.info("Running PPXF in parallel mode")
 
-        # Prepare the folder where the memmap will be dumped
-        memmap_folder = "/scratch" if os.access("/scratch", os.W_OK) else config["GENERAL"]["OUTPUT"]
+        shared_arrays = {
+            "templates": templates,
+            "bin_data": bin_data,
+            "noise": noise,
+            "start": start,
+        }
+        params = {
+            "velscale": velscale,
+            "goodPixels_sfh": goodPixels_sfh,
+            "nmoments": config['SFH']['MOM'],
+            "offset": offset,
+            "degree": -1,
+            "mdeg": config['SFH']['MDEG'],
+            "regul_err": config['SFH']['REGUL_ERR'],
+            "doclean": config["SFH"]["DOCLEAN"],
+            "fixed": fixed,
+            "velscale_ratio": velscale_ratio,
+            "npix": npix,
+            "ncomb": ncomb,
+            "nbins": nbins,
+            "optimal_template_comb": optimal_template_comb,
+            "EBV_init": EBV_init,
+            "logLam": logLam,
+            "nsims": config['SFH']['MC_PPXF'],
+            "logAge_grid": logAge_grid,
+            "metal_grid": metal_grid,
+            "alpha_grid": alpha_grid,
+        }
+        fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan,
+                      np.nan, np.nan, np.nan, np.nan)
 
-        # dump the arrays and load as memmap
-        templates_filename_memmap = memmap_folder + "/templates_memmap.tmp"
-        dump(templates, templates_filename_memmap)
-        templates = load(templates_filename_memmap, mmap_mode='r')
-        
-        bin_data_filename_memmap = memmap_folder + "/bin_data_memmap.tmp"
-        dump(bin_data, bin_data_filename_memmap)
-        bin_data = load(bin_data_filename_memmap, mmap_mode='r')
-        
-        noise_filename_memmap = memmap_folder + "/noise_memmap.tmp"
-        dump(noise, noise_filename_memmap)
-        noise = load(noise_filename_memmap, mmap_mode='r')
-
-        # Define a function to encapsulate the work done in the loop
-        def worker(chunk, templates):
-            results = []
-            for i in chunk:
-                result = run_ppxf(
-                    templates,
-                    bin_data[:,i],
-                    noise[:,i],
-                    velscale,
-                    start[i,:],
-                    goodPixels_sfh,
-                    config['SFH']['MOM'],
-                    offset,
-                    -1,
-                    config['SFH']['MDEG'],
-                    config['SFH']['REGUL_ERR'],
-                    config["SFH"]["DOCLEAN"],
-                    fixed,
-                    velscale_ratio,
-                    npix,
-                    ncomb,
-                    nbins,
-                    i,
-                    optimal_template_comb,
-                    EBV_init,
-                    logLam,
-                    config['SFH']['MC_PPXF'],
-                    logAge_grid,
-                    metal_grid,
-                    alpha_grid
-                )
-                results.append(result)
-            return results
-
-        # Use joblib to parallelize the work
-        max_nbytes = "1M" # max array size before memory mapping is triggered
-        chunk_size = max(1, nbins // (config["GENERAL"]["NCPU"] * 10))
-        chunks = [range(i, min(i + chunk_size, nbins)) for i in range(0, nbins, chunk_size)]
-        parallel_configs = {"n_jobs": config["GENERAL"]["NCPU"], "max_nbytes": max_nbytes, "temp_folder": memmap_folder, "mmap_mode": "c", "return_as":"generator"}
-        ppxf_tmp = list(tqdm(Parallel(**parallel_configs)(delayed(worker)(chunk, templates) for chunk in chunks),
-                        total=len(chunks), desc="Processing chunks", ascii=" #", unit="chunk"))
-
-        # Flatten the results
-        ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
+        wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
+        executor = BatchExecutor(
+            ncpu=config["GENERAL"]["NCPU"],
+            wave_size=wave_size,
+        )
+        ppxf_tmp = executor.run(
+            worker_fn=_sfh_bin_worker,
+            shared_arrays=shared_arrays,
+            params=params,
+            bin_indices=np.arange(nbins),
+            desc="SFH ppxf",
+            fail_value=fail_value,
+        )
 
         # Unpack results
-        for i in range(0, nbins):
+        for i in range(nbins):
             ppxf_result[i,:config['SFH']['MOM']] = ppxf_tmp[i][0]
             w_row[i,:] = ppxf_tmp[i][1]
             ppxf_bestfit[i,:] = ppxf_tmp[i][2]
@@ -932,13 +946,7 @@ def extractStarFormationHistories(config):
             snr_postfit[i] = ppxf_tmp[i][7]
             EBV[i] = ppxf_tmp[i][8]
 
-        # Remove the memory-mapped files
-        os.remove(templates_filename_memmap)
-        os.remove(bin_data_filename_memmap)
-        os.remove(noise_filename_memmap)
-        
         printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
-        
 
     if config['GENERAL']['PARALLEL'] == False:
         printStatus.running("Running PPXF in serial mode")

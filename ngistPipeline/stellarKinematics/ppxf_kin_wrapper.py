@@ -6,12 +6,11 @@ import h5py
 import numpy as np
 from astropy.io import fits
 from astropy.stats import biweight_location
-from joblib import Parallel, delayed, dump, load
 from ppxf.ppxf import ppxf
 from printStatus import printStatus
-from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import _prepareTemplates
 
 robust_sigma = _auxiliary.robust_sigma
@@ -552,6 +551,47 @@ def save_ppxf(
     )
     logging.info("Wrote: " + outfits)
 
+def _kin_bin_worker(bin_idx, shared, params):
+    """Module-level worker for BatchExecutor: fits one bin's stellar kinematics.
+
+    Parameters
+    ----------
+    bin_idx : int
+        Index into the shared ``bin_data`` / ``noise`` / ``start`` arrays.
+    shared : dict
+        Large arrays shared across workers (``templates``, ``bin_data``,
+        ``noise``, ``start``).
+    params : dict
+        Scalar and small-array parameters shared across all bins.
+
+    Returns
+    -------
+    tuple
+        Same 8-element tuple as :func:`run_ppxf`.
+    """
+    return run_ppxf(
+        shared["templates"],
+        shared["bin_data"][:, bin_idx].copy(),
+        shared["noise"][:, bin_idx].copy(),
+        params["velscale"],
+        shared["start"][bin_idx, :].copy(),
+        params["bias"],
+        params["goodPixels_ppxf"].copy(),
+        params["nmoments"],
+        params["adeg"],
+        params["mdeg"],
+        params["reddening"],
+        params["doclean"],
+        params["logLam"],
+        params["offset"],
+        params["velscale_ratio"],
+        params["nsims"],
+        params["nbins"],
+        bin_idx,
+        params["optimal_template_comb"],
+    )
+
+
 def extractStellarKinematics(config):
     """
     Perform the measurement of stellar kinematics, using the pPXF routine. This
@@ -740,63 +780,53 @@ def extractStellarKinematics(config):
     if config["GENERAL"]["PARALLEL"] == True:
         printStatus.running("Running PPXF in parallel mode")
         logging.info("Running PPXF in parallel mode")
-        
-        # Prepare the folder where the memmap will be dumped
-        memmap_folder = "/scratch" if os.access("/scratch", os.W_OK) else config["GENERAL"]["OUTPUT"]
 
-        # dump the arrays and load as memmap
-        templates_filename_memmap = memmap_folder + "/templates_memmap.tmp"
-        dump(templates, templates_filename_memmap)
-        templates = load(templates_filename_memmap, mmap_mode='r')
-        
-        bin_data_filename_memmap = memmap_folder + "/bin_data_memmap.tmp"
-        dump(bin_data, bin_data_filename_memmap)
-        bin_data = load(bin_data_filename_memmap, mmap_mode='r')
-        
-        noise_filename_memmap = memmap_folder + "/noise_memmap.tmp"
-        dump(noise, noise_filename_memmap)
-        noise = load(noise_filename_memmap, mmap_mode='r')
+        # Shared arrays — large, read-only data accessed by every worker.
+        # On Linux (CANFAR) these are shared via fork COW at zero cost.
+        shared_arrays = {
+            "templates": templates,
+            "bin_data": bin_data,
+            "noise": noise,
+            "start": start,
+        }
 
-        # Define a function to encapsulate the work done in the loop
-        def worker(chunk, templates):
-            results = []
-            for i in chunk:
-                result = run_ppxf(
-                    templates,
-                    bin_data[:, i],
-                    noise[:, i],
-                    velscale,
-                    start[i, :],
-                    bias,
-                    goodPixels_ppxf,
-                    config["KIN"]["MOM"],
-                    config["KIN"]["ADEG"],
-                    config["KIN"]["MDEG"],
-                    config["KIN"]["REDDENING"],
-                    config["KIN"]["DOCLEAN"],
-                    logLam,
-                    offset,
-                    velscale_ratio,
-                    nsims,
-                    nbins,
-                    i,
-                    optimal_template_comb,
-                )
-                results.append(result)
-            return results
+        # Scalar / small-array parameters broadcast once per worker.
+        params = {
+            "velscale": velscale,
+            "bias": bias,
+            "goodPixels_ppxf": goodPixels_ppxf,
+            "nmoments": config["KIN"]["MOM"],
+            "adeg": config["KIN"]["ADEG"],
+            "mdeg": config["KIN"]["MDEG"],
+            "reddening": config["KIN"]["REDDENING"],
+            "doclean": config["KIN"]["DOCLEAN"],
+            "logLam": logLam,
+            "offset": offset,
+            "velscale_ratio": velscale_ratio,
+            "nsims": nsims,
+            "nbins": nbins,
+            "optimal_template_comb": optimal_template_comb,
+        }
 
-        # Use joblib to parallelize the work
-        max_nbytes = "1M" # max array size before memory mapping is triggered
-        chunk_size = max(1, nbins // ((config["GENERAL"]["NCPU"]) * 10))
-        chunks = [range(i, min(i + chunk_size, nbins)) for i in range(0, nbins, chunk_size)]
-        parallel_configs = {"n_jobs": config["GENERAL"]["NCPU"], "max_nbytes": max_nbytes, "temp_folder": memmap_folder, "mmap_mode": "c", "return_as":"generator"}
-        ppxf_tmp = list(tqdm(Parallel(**parallel_configs)(delayed(worker)(chunk, templates) for chunk in chunks),
-                        total=len(chunks), desc="Processing chunks", ascii=" #", unit="chunk"))
-        # Flatten the results
-        ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
+        # Sentinel for failed bins (must match run_ppxf failure return)
+        fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+
+        wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
+        executor = BatchExecutor(
+            ncpu=config["GENERAL"]["NCPU"],
+            wave_size=wave_size,
+        )
+        ppxf_tmp = executor.run(
+            worker_fn=_kin_bin_worker,
+            shared_arrays=shared_arrays,
+            params=params,
+            bin_indices=np.arange(nbins),
+            desc="KIN ppxf",
+            fail_value=fail_value,
+        )
 
         # Unpack results
-        for i in range(0, nbins):
+        for i in range(nbins):
             ppxf_result[i, : config["KIN"]["MOM"]] = ppxf_tmp[i][0]
             ppxf_reddening[i] = ppxf_tmp[i][1]
             ppxf_bestfit[i, :] = ppxf_tmp[i][2]
@@ -805,13 +835,8 @@ def extractStellarKinematics(config):
             formal_error[i, : config["KIN"]["MOM"]] = ppxf_tmp[i][5]
             spectral_mask[i, :] = ppxf_tmp[i][6]
             snr_postfit[i] = ppxf_tmp[i][7]
-        
-        printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
 
-        # Remove the memory-mapped files
-        os.remove(templates_filename_memmap)
-        os.remove(bin_data_filename_memmap)
-        os.remove(noise_filename_memmap)
+        printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
 
     elif config["GENERAL"]["PARALLEL"] == False:
         printStatus.running("Running PPXF in serial mode")
