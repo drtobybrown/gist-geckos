@@ -22,6 +22,9 @@ import importlib.util
 import logging
 import optparse
 import sys
+import time
+import psutil
+import threading
 
 import matplotlib
 
@@ -44,6 +47,91 @@ from ngistPipeline.stellarKinematics import _stellarKinematics
 from ngistPipeline.userModules import _userModules
 
 
+class ResourceMonitor:
+    def __init__(self):
+        self.stats = {}
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._peak_memory = 0
+
+    def start_monitoring(self):
+        self._stop_event.clear()
+        self._peak_memory = 0
+        self._thread = threading.Thread(target=self._monitor)
+        self._thread.start()
+
+    def stop_monitoring(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join()
+        return self._peak_memory
+
+    def _monitor(self):
+        process = psutil.Process()
+        while not self._stop_event.is_set():
+            try:
+                # Include children in memory calculation
+                mem = process.memory_info().rss
+                try:
+                    children = process.children(recursive=True)
+                    for child in children:
+                        try:
+                            mem += child.memory_info().rss
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+                if mem > self._peak_memory:
+                    self._peak_memory = mem
+                time.sleep(0.1)
+            except Exception:
+                pass
+
+    def record_module(self, name, func, *args, **kwargs):
+        self.start_monitoring()
+        start_time = time.time()
+        start_cpu = psutil.Process().cpu_times()
+
+        try:
+            result = func(*args, **kwargs)
+        finally:
+            peak_mem = self.stop_monitoring()
+            end_time = time.time()
+            end_cpu = psutil.Process().cpu_times()
+
+            wall_time = end_time - start_time
+            cpu_time = (end_cpu.user - start_cpu.user) + (end_cpu.system - start_cpu.system)
+
+            self.stats[name] = {
+                "wall_time": wall_time,
+                "cpu_time": cpu_time,
+                "peak_memory_mb": peak_mem / (1024 * 1024)
+            }
+
+        return result
+
+    def log_report(self):
+        logging.info("\n" + "="*60)
+        logging.info("RESOURCE USAGE REPORT")
+        logging.info(f"{'Module':<25} {'Wall Time (s)':<15} {'CPU Time (s)':<15} {'Peak Mem (MB)':<15}")
+        logging.info("-" * 70)
+
+        total_wall = 0
+        total_cpu = 0
+        max_mem = 0
+
+        for name, data in self.stats.items():
+            logging.info(f"{name:<25} {data['wall_time']:<15.2f} {data['cpu_time']:<15.2f} {data['peak_memory_mb']:<15.2f}")
+            total_wall += data['wall_time']
+            total_cpu += data['cpu_time']
+            max_mem = max(max_mem, data['peak_memory_mb'])
+
+        logging.info("-" * 70)
+        logging.info(f"{'TOTAL':<25} {total_wall:<15.2f} {total_cpu:<15.2f} {max_mem:<15.2f} (Max Peak)")
+        logging.info("="*60 + "\n")
+
+
 def skipGalaxy(config):
     # _auxiliary.addGISTHeaderComment(config)
     printStatus.module("The nGIST pipeline")
@@ -55,6 +143,8 @@ def runGIST(dirPath, galindex):
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
     # - - - - - - - - -  I N I T I A L I S E   T H E   G I S T  - - - - - - - - - -
     # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+    monitor = ResourceMonitor()
 
     # - - - - - INITIALISE MODULE - - - - -
     # Read config
@@ -131,28 +221,28 @@ def runGIST(dirPath, galindex):
 
         # - - - - - READ_DATA MODULE - - - - -
 
-        cube = _readData.readData_Module(config)
+        cube = monitor.record_module("readData", _readData.readData_Module, config)
         if cube == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - SPATIAL MASKING MODULE - - - - -
 
-        _ = _spatialMasking.spatialMasking_Module(config, cube)
+        _ = monitor.record_module("spatialMasking", _spatialMasking.spatialMasking_Module, config, cube)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - SPATIAL BINNING MODULE - - - - -
 
-        _ = _spatialBinning.spatialBinning_Module(config, cube)
+        _ = monitor.record_module("spatialBinning", _spatialBinning.spatialBinning_Module, config, cube)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - PREPARE SPECTRA MODULE - - - - -
 
-        _ = _prepareSpectra.prepareSpectra_Module(config, cube)
+        _ = monitor.record_module("prepareSpectra", _prepareSpectra.prepareSpectra_Module, config, cube)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
@@ -165,42 +255,42 @@ def runGIST(dirPath, galindex):
 
         # - - - - - STELLAR KINEMATICS MODULE - - - - -
 
-        _ = _stellarKinematics.stellarKinematics_Module(config)
+        _ = monitor.record_module("stellarKinematics", _stellarKinematics.stellarKinematics_Module, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - CONTINUUM CUBE MODULE - - - - -
 
-        _ = _continuumCube.continuumCube_Module(config)
+        _ = monitor.record_module("continuumCube", _continuumCube.continuumCube_Module, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - EMISSION LINES MODULE - - - - -
 
-        _ = _emissionLines.emissionLines_Module(config)
+        _ = monitor.record_module("emissionLines", _emissionLines.emissionLines_Module, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - STAR FORMATION HISTORIES MODULE - - - - -
 
-        _ = _starFormationHistories.starFormationHistories_Module(config)
+        _ = monitor.record_module("starFormationHistories", _starFormationHistories.starFormationHistories_Module, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - LINE STRENGTHS MODULE - - - - -
 
-        _ = _lineStrengths.lineStrengths_Module(config)
+        _ = monitor.record_module("lineStrengths", _lineStrengths.lineStrengths_Module, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
 
         # - - - - - USERS  MODULE - - - - -
 
-        _ = _userModules.user_Modules(config)
+        _ = monitor.record_module("userModules", _userModules.user_Modules, config)
         if _ == "SKIP":
             skipGalaxy(config)
             return None
@@ -244,6 +334,9 @@ def runGIST(dirPath, galindex):
 
     # Branding
     # _auxiliary.addGISTHeaderComment(config)
+
+    # Resource Report
+    monitor.log_report()
 
     # Goodbye
     printStatus.module("nGIST pipeline")

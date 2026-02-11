@@ -44,6 +44,7 @@ setup(name='ngistPipeline',
         'vorbin',
         'plotbin',
         'fitsio',
+        'psutil',
       ],
       python_requires='>=3.6',
       entry_points={
