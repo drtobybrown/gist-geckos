@@ -59,6 +59,7 @@ Then invokes the executor::
 
 import logging
 import multiprocessing as mp
+import multiprocessing.shared_memory
 import numpy as np
 import os
 import sys
