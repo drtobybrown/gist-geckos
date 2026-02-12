@@ -25,31 +25,50 @@ def generateFITS(config, module):
 
     # - - - - - TABLES MODULE - - - - -
     if module == "SPATIAL_BINNING":
+        outdir_sb = config["GENERAL"]["OUTPUT"]
+        run_id_sb = config["GENERAL"]["RUN_ID"]
+        table_path_sb = os.path.join(outdir_sb, run_id_sb) + "_table.fits"
         try:
             printStatus.running("Producing table binned maps in FITS format")
-            save_maps_fits.savefitsmaps("SPATIAL_BINNING", config["SPATIAL_BINNING"]["METHOD"],
-                                        config["GENERAL"]["OUTPUT"]
-                                        )
+            logging.info(
+                "FITS maps SPATIAL_BINNING: OUTPUT=%s RUN_ID=%s table exists=%s",
+                outdir_sb, run_id_sb, os.path.isfile(table_path_sb),
+            )
+            save_maps_fits.savefitsmaps("SPATIAL_BINNING", config["SPATIAL_BINNING"]["METHOD"], outdir_sb)
             printStatus.updateDone("Producing table binned maps in FITS format")
             logging.info("Produced table binned maps in FITS format")
         except Exception as e:
             printStatus.updateFailed("Producing table binned maps in FITS format")
-            logging.error(e, exc_info=True)
-            logging.error("Failed to produce table binned maps.")
+            logging.error(
+                "Producing table binned maps failed: %s: %s",
+                type(e).__name__, str(e),
+            )
+            logging.error("OUTPUT=%s table_path=%s exists=%s", outdir_sb, table_path_sb, os.path.isfile(table_path_sb))
+            logging.exception("Traceback for table binned maps failure")
 
     # - - - - - STELLAR KINEMATICS MODULE - - - - -
     if module == "KIN":
+        outdir_kin = config["GENERAL"]["OUTPUT"]
+        run_id = config["GENERAL"]["RUN_ID"]
+        kin_fits = os.path.join(outdir_kin, run_id) + "_kin.fits"
+        maps_fits = os.path.join(outdir_kin, run_id) + "_KIN_maps.fits"
         try:
             printStatus.running("Producing stellar kinematics maps in FITS format")
-            save_maps_fits.savefitsmaps("KIN", config["KIN"]["METHOD"],
-                                        config["GENERAL"]["OUTPUT"]
-                                        )
+            logging.info(
+                "FITS maps KIN: OUTPUT=%s RUN_ID=%s _kin.fits exists=%s _KIN_maps.fits exists=%s",
+                outdir_kin, run_id, os.path.isfile(kin_fits), os.path.isfile(maps_fits),
+            )
+            save_maps_fits.savefitsmaps("KIN", config["KIN"]["METHOD"], outdir_kin)
             printStatus.updateDone("Producing stellar kinematics maps in FITS format")
             logging.info("Produced stellar kinematics maps in FITS format")
         except Exception as e:
             printStatus.updateFailed("Producing stellar kinematics maps in FITS format")
-            logging.error(e, exc_info=True)
-            logging.error("Failed to produce stellar kinematics maps.")
+            logging.error(
+                "Producing stellar kinematics maps failed: %s: %s",
+                type(e).__name__, str(e),
+            )
+            logging.error("OUTPUT=%s RUN_ID=%s kin_fits=%s exists=%s", outdir_kin, run_id, kin_fits, os.path.isfile(kin_fits))
+            logging.exception("Traceback for stellar kinematics maps failure")
 
     # - - - - - CONTINUUM CUBE MODULE - - - - -
     if module == "CONT":

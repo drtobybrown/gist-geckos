@@ -122,8 +122,14 @@ def savefitsmaps(module_id, method_id, outdir=""):
     runname = outdir
     rootname = outdir.rstrip("/").split("/")[-1]
 
+    logging.info(
+        "savefitsmaps: module_id=%s method_id=%s outdir=%s rootname=%s",
+        module_id, method_id, outdir, rootname,
+    )
+
     # Read bintable using fitsio
     table_path = os.path.join(outdir, rootname) + "_table.fits"
+    logging.info("savefitsmaps: table_path=%s exists=%s", table_path, os.path.isfile(table_path))
     if not os.path.isfile(table_path):
         raise FileNotFoundError(
             "Table FITS not found: %s (output dir may be wrong or spatial binning did not write it)"
@@ -195,6 +201,7 @@ def savefitsmaps(module_id, method_id, outdir=""):
 
     elif module_id == "KIN":
         kin_path = os.path.join(outdir, rootname) + "_kin.fits"
+        logging.info("savefitsmaps KIN: kin_path=%s exists=%s", kin_path, os.path.isfile(kin_path))
         if not os.path.isfile(kin_path):
             raise FileNotFoundError(
                 "KIN results not found: %s (stellarKinematics may have failed or not run)" % kin_path
@@ -209,6 +216,7 @@ def savefitsmaps(module_id, method_id, outdir=""):
             result = np.zeros((len(ubins), len(names)))
             for i, name in enumerate(names):
                 result[:, i] = np.array(data_kin[name])
+        logging.info("savefitsmaps KIN: read %d columns, result shape %s", len(names), result.shape)
 
     elif module_id == "SFH":
         sfh_path = os.path.join(outdir, rootname) + "_sfh.fits"
@@ -252,6 +260,10 @@ def savefitsmaps(module_id, method_id, outdir=""):
 
     ####### Adding the ability to output maps as fits files
     out_filename = os.path.join(outdir, rootname) + "_" + module_id + "_maps.fits"
+    logging.info(
+        "savefitsmaps: writing %s maps to %s (names=%d, result.shape=%s)",
+        module_id, out_filename, len(names), result.shape,
+    )
     if os.path.exists(out_filename):
         os.remove(out_filename)
 
