@@ -1,6 +1,7 @@
 import importlib.util
 import logging
 import os
+import sys
 
 import yaml
 from printStatus import printStatus
@@ -40,8 +41,9 @@ def stellarKinematics_Module(config):
     # Import the chosen stellarKinematics routine
     try:
 
+        mod_name = "ngistPipeline.stellarKinematics." + config_use + "_kin_wrapper"
         spec = importlib.util.spec_from_file_location(
-            "",
+            mod_name,
             os.path.dirname(os.path.realpath(__file__))
             + "/"
             + config_use
@@ -51,6 +53,7 @@ def stellarKinematics_Module(config):
             "Using the stellarKinematics routine '" + config_use + "_kin_wrapper.py'"
         )
         module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         logging.critical(e, exc_info=True)

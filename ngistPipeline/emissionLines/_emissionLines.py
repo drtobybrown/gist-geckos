@@ -1,6 +1,7 @@
 import importlib.util
 import logging
 import os
+import sys
 
 from printStatus import printStatus
 
@@ -80,8 +81,9 @@ def emissionLines_Module(config):
 
     # Import the chosen emissionLines routine
     try:
+        mod_name = "ngistPipeline.emissionLines." + config["GAS"]["METHOD"] + "_gas_wrapper"
         spec = importlib.util.spec_from_file_location(
-            "",
+            mod_name,
             os.path.dirname(os.path.realpath(__file__))
             + "/"
             + config["GAS"]["METHOD"]
@@ -91,6 +93,7 @@ def emissionLines_Module(config):
             "Using the emissionLines routine '" + config["GAS"]["METHOD"] + "_gas_wrapper.py'"
         )
         module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         logging.critical(e, exc_info=True)

@@ -1,6 +1,7 @@
 import importlib.util
 import logging
 import os
+import sys
 
 from printStatus import printStatus
 
@@ -36,8 +37,9 @@ def lineStrengths_Module(config):
 
     # Import the chosen lineStrengths routine
     try:
+        mod_name = "ngistPipeline.lineStrengths." + config["LS"]["METHOD"]
         spec = importlib.util.spec_from_file_location(
-            "",
+            mod_name,
             os.path.dirname(os.path.realpath(__file__))
             + "/"
             + config["LS"]["METHOD"]
@@ -47,6 +49,7 @@ def lineStrengths_Module(config):
             "Using the lineStrengths routine '" + config["LS"]["METHOD"] + ".py'"
         )
         module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         logging.critical(e, exc_info=True)

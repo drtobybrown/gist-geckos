@@ -1,6 +1,7 @@
 import importlib.util
 import logging
 import os
+import sys
 
 from printStatus import printStatus
 
@@ -36,8 +37,9 @@ def starFormationHistories_Module(config):
 
     # Import the chosen starFormationHistories routine
     try:
+        mod_name = "ngistPipeline.starFormationHistories." + config["SFH"]["METHOD"] + "_sfh_wrapper"
         spec = importlib.util.spec_from_file_location(
-            "",
+            mod_name,
             os.path.dirname(os.path.realpath(__file__))
             + "/"
             + config["SFH"]["METHOD"]
@@ -49,6 +51,7 @@ def starFormationHistories_Module(config):
             + "_sfh_wrapper.py'"
         )
         module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
         spec.loader.exec_module(module)
     except Exception as e:
         logging.critical(e, exc_info=True)
