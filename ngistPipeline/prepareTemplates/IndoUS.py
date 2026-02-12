@@ -111,8 +111,7 @@ def prepareSpectralTemplateLibrary(
 
         # Normalise templates in such a way to get light-weighted results
         if config[module_used]["NORM_TEMP"] == "LIGHT":
-            for i in range(templates.shape[1]):
-                templates[:, i] = templates[:, i] / np.mean(templates[:, i], axis=0)
+            templates /= np.mean(templates, axis=0, keepdims=True)
 
         printStatus.updateDone("Preparing the stellar population templates")
         logging.info("Prepared the stellar population templates")

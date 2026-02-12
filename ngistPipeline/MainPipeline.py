@@ -150,6 +150,7 @@ def runGIST(dirPath, galindex):
     # Read config
     config = _initialise.readMasterConfig(dirPath.configFile, galindex)
     config = _initialise.addPathsToConfig(config, dirPath)
+    config = _initialise.ensureNCPU(config)
 
     # Pre-flight resource check
     if not _initialise.checkResources(config):

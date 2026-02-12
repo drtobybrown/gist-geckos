@@ -325,14 +325,11 @@ def run_ppxf(
 
 def _build_coarse_idx(nAges, nMetal, nAlpha, step_age, step_metal, step_alpha):
     """Linear indices for a coarse (age, metal, alpha) grid. Order: age fastest, then metal, then alpha."""
-    idx_list = []
-    for i in range(nAlpha):
-        for k in range(nMetal):
-            for j in range(nAges):
-                if (j % step_age == 0) and (k % step_metal == 0) and (i % step_alpha == 0):
-                    t = j + nAges * k + nAges * nMetal * i
-                    idx_list.append(t)
-    return np.array(idx_list, dtype=np.intp)
+    j_ar = np.arange(0, nAges, step_age)
+    k_ar = np.arange(0, nMetal, step_metal)
+    i_ar = np.arange(0, nAlpha, step_alpha)
+    jg, kg, ig = np.meshgrid(j_ar, k_ar, i_ar, indexing="ij")
+    return (jg + nAges * kg + nAges * nMetal * ig).ravel().astype(np.intp)
 
 
 def _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, radius_age, radius_metal, radius_alpha):
@@ -343,13 +340,13 @@ def _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, radius_age, radius
     k_hi = min(nMetal, k0 + radius_metal + 1)
     i_lo = max(0, i0 - radius_alpha)
     i_hi = min(nAlpha, i0 + radius_alpha + 1)
-    idx_list = []
-    for i in range(i_lo, i_hi):
-        for k in range(k_lo, k_hi):
-            for j in range(j_lo, j_hi):
-                t = j + nAges * k + nAges * nMetal * i
-                idx_list.append(t)
-    return np.array(idx_list, dtype=np.intp)
+    jg, kg, ig = np.meshgrid(
+        np.arange(j_lo, j_hi),
+        np.arange(k_lo, k_hi),
+        np.arange(i_lo, i_hi),
+        indexing="ij",
+    )
+    return (jg + nAges * kg + nAges * nMetal * ig).ravel().astype(np.intp)
 
 
 def build_grid_config(module_config, nAges, nMetal, nAlpha, log_prefix=""):
@@ -389,13 +386,7 @@ def build_grid_config(module_config, nAges, nMetal, nAlpha, log_prefix=""):
         steps = module_config["REDUCED_GRID"]
         if isinstance(steps, (list, tuple)) and len(steps) >= 3:
             sa, sm, salpha = max(1, int(steps[0])), max(1, int(steps[1])), max(1, int(steps[2]))
-            idx_list = []
-            for i in range(nAlpha):
-                for k in range(nMetal):
-                    for j in range(nAges):
-                        if (j % sa == 0) and (k % sm == 0) and (i % salpha == 0):
-                            idx_list.append(j + nAges * k + nAges * nMetal * i)
-            reduced_idx = np.array(idx_list, dtype=np.intp)
+            reduced_idx = _build_coarse_idx(nAges, nMetal, nAlpha, sa, sm, salpha)
             logging.info(
                 "%sreduced grid: %d templates (steps age=%d metal=%d alpha=%d)",
                 log_prefix, len(reduced_idx), sa, sm, salpha,

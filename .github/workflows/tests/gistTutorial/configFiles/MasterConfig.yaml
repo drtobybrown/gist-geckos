@@ -5,7 +5,8 @@ GENERAL :
   OUTPUT : . # Output directory. The output of this run will be collected in a subdirectory named RUN_ID. The specified path is relative to the output path given in defaultDir.
   REDSHIFT : 0.008764 # Initial guess on the redshift of the system [in z]. Spectra are shifted to rest-frame, according to this redshift.
   PARALLEL: True # Use multiprocessing [True/False]
-  NCPU : 4 # Number of cores to use for multiprocessing
+  NCPU : 4 # Number of cores for multiprocessing. If omitted, uses all available (os.cpu_count()).
+  CACHE_TEMPLATES : True # Cache prepared templates under TEMPLATE_DIR/.prepared for faster restarts. Set False to disable.
   LSF_DATA : 'lsf_MUSE-WFM' # Path of the file specifying the line-spread-function of the observational data. The specified path is relative to the configDir path in defaultDir.
   OW_CONFIG : True #  Ignore configurations from previous runs which are saved in the CONFIG file in the output directory [True/False]
   OW_OUTPUT : True # Overwrite any output files already present in the current output directory [True/False]
@@ -71,7 +72,7 @@ CONT :
   MDEG : 8 # Degree of the multiplicative Legendre polynomial. Set '0' to not include any multiplicative polynomials
   REDDENING : null # As opposed to None. Initial guess on the stellar reddening E(B-V), in order to measure the stellar reddening. Note: This cannot be used together with multiplicative polynomials.
   MC_PPXF : 0 # Number of Monte-Carlo simulations to extract errors on the stellar kinematics. Formal errors are saved in any case.
-  # ADAPTIVE_GRID : [4, 2, 1]  # Optional: same as KIN; coarse-to-fine template grid. REDUCED_GRID also supported.
+  ADAPTIVE_GRID : [4, 2, 1]  # Default: same as KIN; coarse-to-fine. Comment out for full grid.
   LSF_TEMP : 'lsf_MILES' # Path of the file specifying the line-spread-function of the spectral templates. The specified path is relative to the configDir path in defaultDir.
   TEMPLATE_SET : 'miles' # options are 'miles' or 'IndoUS' or 'walcher'
   LIBRARY : 'MILES/' # options are 'MILES/', 'miles_ssp_ch/', 'IndoUS', and 'Walcher/'
@@ -92,7 +93,7 @@ GAS :
   MOM : 2
   EBmV : null # As opposed to None
   EMI_FILE : 'emissionLinesPHANGS.config'
-  # ADAPTIVE_GRID : [4, 2, 1]  # Optional: stellar subset; coarse grid or REDUCED_GRID for faster ppxf.
+  ADAPTIVE_GRID : [4, 2, 1]  # Default: stellar subset (coarse grid). Comment out for full grid.
   LSF_TEMP : 'lsf_MILES' # Path of the file specifying the line-spread-function of the spectral templates. The specified path is relative to the configDir path in defaultDir.
   TEMPLATE_SET : 'miles'
   LIBRARY : 'MILES_EMLINES/'
@@ -111,7 +112,7 @@ SFH :
   NOISE : 1.
   FIXED : True
   MC_PPXF : 0 # Added to add the option of running MC on the SFH module
-  # ADAPTIVE_GRID : [4, 2, 1]  # Optional: same as KIN; coarse-to-fine or REDUCED_GRID for template subset.
+  ADAPTIVE_GRID : [4, 2, 1]  # Default: same as KIN; coarse-to-fine. Comment out for full grid.
   LSF_TEMP : 'lsf_MILES' # Path of the file specifying the line-spread-function of the spectral templates. The specified path is relative to the configDir path in defaultDir.
   TEMPLATE_SET : 'miles'
   LIBRARY : 'MILES/'

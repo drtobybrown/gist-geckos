@@ -297,26 +297,20 @@ def generate_emission_lines_templates(emldb, LamRange, config, logLam, eml_fwhm_
 
     # Construct the templates
     pix = np.arange(wave.size)
-    flux = np.zeros((ntpl,wave.size), dtype=float)
-    gas_names = []
-    line_wave=[]
+    flux = np.zeros((ntpl, wave.size), dtype=float)
+    gas_names = [None] * ntpl
+    line_wave = np.empty(ntpl)
     for i in range(ntpl):
         # Find all the lines associated with this template:
-        wtemp=tpli == i
+        wtemp = tpli == i
         index = np.arange(nlinesdb)[wtemp]
-        gas_names.append(emldb['name'][wtemp][0])
-        line_wave.append(emldb['lambda'][wtemp][0])
+        gas_names[i] = emldb['name'][wtemp][0]
+        line_wave[i] = emldb['lambda'][wtemp][0]
         # Add each line to the template
         for j in index:
-            # Declare an instance of the desired profile
             profile = FFTGaussianLSF()
-            # Use the first three moments of the line to set the
-            # parameters
             p = profile.parameters_from_moments(_flux[j], _restwave[j], _sigma[j])
-            # Add the line to the flux in this template
-            flux[i,:] += profile(pix, p)
+            flux[i, :] += profile(pix, p)
 
-
-    gas_templates, gas_names, line_wave = flux, np.array(gas_names), \
-        np.array(line_wave)
+    gas_templates, gas_names, line_wave = flux, np.array(gas_names), line_wave
     return(gas_templates.T, gas_names, line_wave, eml_tying)

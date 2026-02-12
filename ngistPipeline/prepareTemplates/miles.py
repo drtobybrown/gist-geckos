@@ -19,9 +19,7 @@ def age_metal_alpha(passedFiles):
     out = np.zeros((len(passedFiles), 3))
     out[:, :] = np.nan
 
-    files = []
-    for i in range(len(passedFiles)):
-        files.append(passedFiles[i].split("/")[-1])
+    files = [p.split("/")[-1] for p in passedFiles]
 
     for num, s in enumerate(files):
         # Ages
@@ -46,7 +44,6 @@ def age_metal_alpha(passedFiles):
             EMILES = True
             # logging.info("EMILES=True")
 
-
         if EMILES == False:
             # Usage of MILES: There is a alpha defined
             e = s.find("E")
@@ -65,22 +62,15 @@ def age_metal_alpha(passedFiles):
     nAlpha = len(Alpha)
     ncomb = nAges * nMetal * nAlpha
 
-    metal_str = []
-    alpha_str = []
-    for i in range(len(Metal)):
-        if Metal[i] > 0:
-            mm = "p" + "{:.2f}".format(np.abs(Metal[i])) + "T"
-        elif Metal[i] < 0:
-            mm = "m" + "{:.2f}".format(np.abs(Metal[i])) + "T"
-        metal_str.append(mm)
-    for i in range(len(Alpha)):
-        if EMILES == False:
-            alpha_str.append("Ep" + "{:.2f}".format(Alpha[i]))
-        elif EMILES == True:
-            alpha_str = ["baseFe"]
+    metal_str = [
+        ("p" if Metal[i] > 0 else "m") + "{:.2f}T".format(np.abs(Metal[i]))
+        for i in range(len(Metal))
+    ]
+    alpha_str = ["baseFe"] if EMILES else ["Ep{:.2f}".format(Alpha[i]) for i in range(len(Alpha))]
 
+    logAge = np.log10(Age)
     return (
-        np.log10(Age),
+        logAge,
         Metal,
         Alpha,
         metal_str,
@@ -89,6 +79,7 @@ def age_metal_alpha(passedFiles):
         nMetal,
         nAlpha,
         ncomb,
+        out,
     )
 
 
@@ -175,11 +166,40 @@ def prepareSpectralTemplateLibrary(
     # Create an array to store the templates
     sspNew, _, _ = log_rebin(lamRange_spmod, ssp_data, velscale=velscale)
 
-    # Do NOT sort the templates in any way
+    # Do NOT sort the templates in any way (but load in grid order for reduced-grid support)
     if sortInGrid == False:
-        # Load templates, convolve and log-rebin them
+        # Get grid dimensions and per-file (age, metal, alpha) for consistent ordering
+        (
+            logAge_u,
+            metal_u,
+            alpha_u,
+            metal_str,
+            alpha_str,
+            nAges,
+            nMetal,
+            nAlpha,
+            ncomb,
+            out_per_file,
+        ) = age_metal_alpha(sp_models)
+
+        # Build sorted file order: same as sortInGrid True (alpha, metal, age)
+        # so that flat index t = j + nAges*k + nAges*nMetal*i
+        def find_grid_index(age_f, metal_f, alpha_f):
+            j = np.argmin(np.abs(np.log10(age_f) - logAge_u))
+            k = np.argmin(np.abs(metal_f - metal_u))
+            i = np.argmin(np.abs(alpha_f - alpha_u))
+            return (i, k, j)
+
+        file_with_ijk = [
+            (find_grid_index(*out_per_file[idx, :]), f)
+            for idx, f in enumerate(sp_models)
+        ]
+        file_with_ijk.sort(key=lambda x: x[0])
+        ordered_files = [f for (_, f) in file_with_ijk]
+
+        # Load templates in grid order
         templates = np.empty((sspNew.size, ntemplates))
-        for j, file in enumerate(sp_models):
+        for j, file in enumerate(ordered_files):
             hdu = fits.open(file)
             ssp_data = np.squeeze(hdu[0].data)[idx_lam]
             ssp_data = gaussian_filter1d(ssp_data, sigma)
@@ -193,8 +213,7 @@ def prepareSpectralTemplateLibrary(
 
         # Normalise templates in such a way to get light-weighted results
         if config[module_used]["NORM_TEMP"] == "LIGHT":
-            for i in range(templates.shape[1]):
-                templates[:, i] = templates[:, i] / np.mean(templates[:, i], axis=0)
+            templates /= np.mean(templates, axis=0, keepdims=True)
 
         printStatus.updateDone("Preparing the stellar population templates")
         logging.info("Prepared the stellar population templates")
@@ -207,10 +226,10 @@ def prepareSpectralTemplateLibrary(
             np.nan,
             np.nan,
             np.nan,
-            np.nan,
-            np.nan,
-            np.nan,
-            np.nan,
+            ncomb,
+            nAges,
+            nMetal,
+            nAlpha,
         )
 
     # Sort the templates in a cube of age, metal, alpha for the SFH module
@@ -226,6 +245,7 @@ def prepareSpectralTemplateLibrary(
             nMetal,
             nAlpha,
             ncomb,
+            _out_per_file,
         ) = age_metal_alpha(sp_models)
 
         templates = np.zeros((sspNew.size, nAges, nMetal, nAlpha))

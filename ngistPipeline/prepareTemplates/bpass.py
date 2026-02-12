@@ -28,21 +28,19 @@ def age_metal_alpha(passedFiles):
     alpha-enhancement.
     """
 
-    files = []
-    for i in range(len(passedFiles)):
-        files.append(passedFiles[i].split("/")[-1])
+    files = [p.split("/")[-1] for p in passedFiles]
 
     Metal = np.zeros(len(files))
     Alpha = np.zeros(len(files))
-    metal_str = np.array([], dtype="str")
-    alpha_str = np.array([], dtype="str")
+    alpha_str_list = []
+    metal_str_list = []
     for ff, file in enumerate(files):
         a = file.find(".a")
-        alpha_str = np.append(alpha_str, file[a + 1 : a + 5])
+        alpha_str_list.append(file[a + 1 : a + 5])
         Alpha[ff] = float(file[a + 2 : a + 5])
 
         z = file.find(".z")
-        metal_str = np.append(metal_str, file[z + 1 : z + 5])
+        metal_str_list.append(file[z + 1 : z + 5])
         z = file[z + 2 : z + 5]
         if "em" in z:
             z = z[-1]
@@ -53,8 +51,8 @@ def age_metal_alpha(passedFiles):
     Age = np.arange(6, 11 + 0.1, 0.1)
     Metal = np.unique(Metal)
     Alpha = np.unique(Alpha)
-    metal_str = np.unique(metal_str)
-    alpha_str = np.unique(alpha_str)
+    metal_str = np.unique(np.array(metal_str_list))
+    alpha_str = np.unique(np.array(alpha_str_list))
 
     nAges = len(Age)
     nMetal = len(Metal)

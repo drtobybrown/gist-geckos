@@ -112,6 +112,25 @@ def addPathsToConfig(
     return config
 
 
+def ensureNCPU(config):
+    """
+    If NCPU is not set or invalid in config["GENERAL"], set it to the number of
+    CPUs available (os.cpu_count()). Default: use all available cores for faster runs.
+    """
+    general = config["GENERAL"]
+    ncpu = general.get("NCPU")
+    try:
+        ncpu = int(ncpu) if ncpu is not None else None
+    except (TypeError, ValueError):
+        ncpu = None
+    if ncpu is None or ncpu < 1:
+        ncpu = os.cpu_count()
+        if ncpu is None or ncpu < 1:
+            ncpu = 1
+    general["NCPU"] = ncpu
+    return config
+
+
 def checkOutputDirectory(config):
     """
     Create output directory if it does not exist yet.
