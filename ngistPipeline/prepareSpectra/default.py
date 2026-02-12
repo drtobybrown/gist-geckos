@@ -27,13 +27,206 @@ def get_input_bunit(config):
     return None
 
 
+# ====================================================================== #
+#  Public entry point                                                      #
+# ====================================================================== #
+
 def prepSpectra(config, cube):
     """
-    This function performs the following tasks:
-     * Apply spatial bins to linear spectra; Save these spectra to disk
-     * Log-rebin all spectra, regardless of whether the spaxels are masked or not; Save all spectra to disk
-     * Apply spatial bins to log-rebinned spectra; Save these spectra to disk
+    Prepare spectra for analysis modules.
+
+    If *cube* is a ``LazyCube`` (out-of-core mode), spectra are streamed
+    from the FITS file in spatial tiles — never loading the full cube.
+    Otherwise, the legacy in-memory code path is used.
     """
+    if hasattr(cube, "tile_iterator"):
+        return _prepSpectra_streaming(config, cube)
+    else:
+        return _prepSpectra_legacy(config, cube)
+
+
+# ====================================================================== #
+#  Streaming (out-of-core) implementation                                  #
+# ====================================================================== #
+
+def _prepSpectra_streaming(config, cube):
+    """Process spectra in spatial tiles — O(tile) memory, not O(cube)."""
+
+    # --- Read mask and bin table ---
+    maskfile = (
+        os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
+        + "_mask.fits"
+    )
+    with fitsio.FITS(maskfile) as mhdu:
+        mask = mhdu[1].read()["MASK"]
+    idxUnmasked = np.where(mask == 0)[0]
+
+    tablefile = (
+        os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
+        + "_table.fits"
+    )
+    with fitsio.FITS(tablefile) as thdu:
+        data = thdu[1].read()
+        binNum = data["BIN_ID"][idxUnmasked]
+
+    # Full spaxel → bin mapping (-1 = masked)
+    nspaxels = cube.nspaxels
+    spaxel_to_bin = np.full(nspaxels, -1, dtype=np.int64)
+    spaxel_to_bin[idxUnmasked] = binNum
+
+    ubins = np.unique(binNum)
+    nbins = len(ubins)
+    # Map bin IDs to contiguous 0..nbins-1
+    bin_remap = np.full(int(ubins.max()) + 1, -1, dtype=np.int64)
+    bin_remap[ubins] = np.arange(nbins)
+
+    wave = cube["wave"]
+    nwave = len(wave)
+    velscale = config["PREPARE_SPECTRA"]["VELSCALE"]
+    bunit = cube.get("bunit")
+    write_all = config["GAS"]["LEVEL"] == "SPAXEL"
+
+    # --- Probe log_rebin to get output grid ---
+    wave_range = np.array([np.amin(wave), np.amax(wave)])
+    dummy = np.ones(nwave, dtype=np.float64)
+    probe, logLam, _ = log_rebin(wave_range, dummy, velscale=velscale)
+    npix_log = len(logLam)
+
+    # --- Allocate accumulators ---
+    # Linear binned spectra
+    bin_sum_spec_lin = np.zeros((nwave, nbins), dtype=np.float64)
+    bin_sum_err_lin = np.zeros((nwave, nbins), dtype=np.float64)
+    # Log-rebinned binned spectra
+    bin_sum_spec_log = np.zeros((npix_log, nbins), dtype=np.float64)
+    bin_sum_err_log = np.zeros((npix_log, nbins), dtype=np.float64)
+
+    logging.info(
+        "Streaming prepareSpectra: %d spaxels, %d bins, %d unmasked, "
+        "accumulators ~%.0f MB",
+        nspaxels, nbins, len(idxUnmasked),
+        (bin_sum_spec_lin.nbytes + bin_sum_err_lin.nbytes
+         + bin_sum_spec_log.nbytes + bin_sum_err_log.nbytes) / 1e6,
+    )
+
+    # --- Open AllSpectra HDF5 for incremental writes if needed ---
+    allspec_path = None
+    allspec_file = None
+    allspec_spec = None
+    allspec_espec = None
+
+    if write_all:
+        allspec_path = (
+            os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
+            + "_AllSpectra.hdf5"
+        )
+        printStatus.running("Preparing: " + config["GENERAL"]["RUN_ID"] + "_AllSpectra.hdf5")
+        allspec_file = h5py.File(allspec_path, "w")
+        # Chunked for efficient column-block reads later (GAS SPAXEL)
+        chunk_cols = min(1024, nspaxels)
+        allspec_spec = allspec_file.create_dataset(
+            "SPEC", shape=(npix_log, nspaxels), dtype="float64",
+            chunks=(npix_log, chunk_cols),
+        )
+        allspec_espec = allspec_file.create_dataset(
+            "ESPEC", shape=(npix_log, nspaxels), dtype="float64",
+            chunks=(npix_log, chunk_cols),
+        )
+
+    # --- Stream tiles ---
+    printStatus.running("Streaming tiles: log-rebinning + spatial binning")
+    tiles_processed = 0
+
+    for indices, spec_tile, error_tile in cube.tile_iterator():
+        n_tile = len(indices)
+
+        # ---- Linear binning accumulation ----
+        tile_bins = spaxel_to_bin[indices]
+        valid = tile_bins >= 0
+        if valid.any():
+            v_bins = bin_remap[tile_bins[valid]]
+            v_spec = np.nan_to_num(spec_tile[:, valid], nan=0.0)
+            v_err = np.nan_to_num(error_tile[:, valid], nan=0.0)
+            # Accumulate per-bin
+            np.add.at(bin_sum_spec_lin, (slice(None), v_bins), v_spec)
+            np.add.at(bin_sum_err_lin, (slice(None), v_bins), v_err)
+
+        # ---- Log-rebin each spaxel in this tile ----
+        log_tile = np.full((npix_log, n_tile), np.nan, dtype=np.float64)
+        log_err_tile = np.full((npix_log, n_tile), np.nan, dtype=np.float64)
+
+        for j in range(n_tile):
+            try:
+                log_s, _, _ = log_rebin(wave_range, spec_tile[:, j], velscale=velscale)
+                log_tile[:, j] = log_s
+            except Exception:
+                log_tile[:, j] = np.nan
+
+            try:
+                log_e, _, _ = log_rebin(wave_range, error_tile[:, j], velscale=velscale)
+                log_err_tile[:, j] = log_e
+            except Exception:
+                log_err_tile[:, j] = np.nan
+
+        # ---- Write AllSpectra (all spaxels including masked) ----
+        if write_all and allspec_spec is not None:
+            allspec_spec[:, indices[0] : indices[-1] + 1] = log_tile
+            allspec_espec[:, indices[0] : indices[-1] + 1] = log_err_tile
+
+        # ---- Log-rebinned binning accumulation ----
+        if valid.any():
+            v_bins = bin_remap[tile_bins[valid]]
+            v_log = np.nan_to_num(log_tile[:, valid], nan=0.0)
+            v_log_err = np.nan_to_num(log_err_tile[:, valid], nan=0.0)
+            np.add.at(bin_sum_spec_log, (slice(None), v_bins), v_log)
+            np.add.at(bin_sum_err_log, (slice(None), v_bins), v_log_err)
+
+        # Free tile memory explicitly
+        del spec_tile, error_tile, log_tile, log_err_tile
+
+        tiles_processed += 1
+        if tiles_processed % 10 == 0:
+            logging.info("  Processed %d tiles (%d spaxels so far)",
+                         tiles_processed, indices[-1] + 1)
+
+    printStatus.updateDone("Streaming tiles: log-rebinning + spatial binning", progressbar=True)
+
+    # --- Finalise AllSpectra HDF5 ---
+    if allspec_file is not None:
+        allspec_file.create_dataset("LOGLAM", data=logLam)
+        allspec_file.attrs["VELSCALE"] = velscale
+        allspec_file.attrs["CRPIX1"] = 1.0
+        allspec_file.attrs["CRVAL1"] = logLam[0]
+        allspec_file.attrs["CDELT1"] = logLam[1] - logLam[0]
+        if bunit is not None:
+            allspec_file.attrs["BUNIT"] = bunit
+            allspec_spec.attrs["BUNIT"] = bunit
+            allspec_espec.attrs["BUNIT"] = bunit
+        allspec_file.close()
+        printStatus.updateDone(
+            "Writing: " + config["GENERAL"]["RUN_ID"] + "_AllSpectra.hdf5"
+        )
+        logging.info("Wrote: " + allspec_path)
+
+    # --- Finalise bin error (sqrt of summed variance) ---
+    bin_err_lin = np.sqrt(bin_sum_err_lin)
+    bin_err_log = np.sqrt(bin_sum_err_log)
+
+    # --- Save linear BinSpectra ---
+    saveBinSpectra(config, bin_sum_spec_lin, bin_err_lin, velscale, wave, "lin", bunit=bunit)
+
+    # --- Save log BinSpectra ---
+    saveBinSpectra(config, bin_sum_spec_log, bin_err_log, velscale, logLam, "log", bunit=bunit)
+
+    logging.info("Streaming prepareSpectra complete.")
+    return None
+
+
+# ====================================================================== #
+#  Legacy (in-memory) implementation — preserved for backward compat       #
+# ====================================================================== #
+
+def _prepSpectra_legacy(config, cube):
+    """Original in-memory implementation for cubes returned as plain dicts."""
 
     # Read maskfile
     maskfile = (
@@ -43,7 +236,6 @@ def prepSpectra(config, cube):
     with fitsio.FITS(maskfile) as mhdu:
         mask = mhdu[1].read()["MASK"]
     idxUnmasked = np.where(mask == 0)[0]
-    idxMasked = np.where(mask == 1)[0]
 
     # Read binning pattern
     tablefile = (
@@ -51,8 +243,8 @@ def prepSpectra(config, cube):
         + "_table.fits"
     )
     with fitsio.FITS(tablefile) as tablehdu:
-         data = tablehdu[1].read()
-         binNum = data["BIN_ID"][idxUnmasked]
+        data = tablehdu[1].read()
+        binNum = data["BIN_ID"][idxUnmasked]
 
     # Apply spatial bins to linear spectra
     bin_data, bin_error, bin_flux = applySpatialBins(
@@ -62,25 +254,21 @@ def prepSpectra(config, cube):
         config["PREPARE_SPECTRA"]["VELSCALE"],
         "lin",
     )
-    # Save spatially binned spectra
     saveBinSpectra(
-        config,
-        bin_data,
-        bin_error,
+        config, bin_data, bin_error,
         config["PREPARE_SPECTRA"]["VELSCALE"],
-        cube["wave"],
-        "lin",
+        cube["wave"], "lin",
         bunit=cube.get("bunit"),
     )
 
     # Log-rebin spectra
     log_spec, log_error, logLam = log_rebinning(config, cube)
-    
 
     # Save all log-rebinned spectra only if running in full spaxel mode
     if config["GAS"]["LEVEL"] == "SPAXEL":
         saveAllSpectra(
-            config, log_spec, log_error, config["PREPARE_SPECTRA"]["VELSCALE"], logLam,
+            config, log_spec, log_error,
+            config["PREPARE_SPECTRA"]["VELSCALE"], logLam,
             bunit=cube.get("bunit"),
         )
 
@@ -92,42 +280,34 @@ def prepSpectra(config, cube):
         config["PREPARE_SPECTRA"]["VELSCALE"],
         "log",
     )
-    # Save spatially binned spectra
     saveBinSpectra(
-        config,
-        bin_data,
-        bin_error,
+        config, bin_data, bin_error,
         config["PREPARE_SPECTRA"]["VELSCALE"],
-        logLam,
-        "log",
+        logLam, "log",
         bunit=cube.get("bunit"),
     )
 
     return None
 
 
+# ====================================================================== #
+#  Shared helper functions                                                 #
+# ====================================================================== #
+
 def log_rebinning(config, cube):
-    """
-    Logarithmically rebin spectra and error spectra.
-    """
-    # Log-rebin the spectra
+    """Logarithmically rebin spectra and error spectra (in-memory path)."""
     printStatus.running("Log-rebinning the spectra")
     log_spec, logLam = run_log_rebinning(
-        cube["spec"],
-        config["PREPARE_SPECTRA"]["VELSCALE"],
-        len(cube["x"]),
-        cube["wave"],
+        cube["spec"], config["PREPARE_SPECTRA"]["VELSCALE"],
+        len(cube["x"]), cube["wave"],
     )
     printStatus.updateDone("Log-rebinning the spectra", progressbar=True)
     logging.info("Log-rebinned the spectra")
 
-    # Log-rebin the error spectra
     printStatus.running("Log-rebinning the error spectra")
     log_error, _ = run_log_rebinning(
-        cube["error"],
-        config["PREPARE_SPECTRA"]["VELSCALE"],
-        len(cube["x"]),
-        cube["wave"],
+        cube["error"], config["PREPARE_SPECTRA"]["VELSCALE"],
+        len(cube["x"]), cube["wave"],
     )
     printStatus.updateDone("Log-rebinning the error spectra", progressbar=True)
     logging.info("Log-rebinned the error spectra")
@@ -138,40 +318,22 @@ def log_rebinning(config, cube):
 def run_log_rebinning(
     binned_data, velocity_scale, num_bins, wavelength, chunk_size=1000
 ):
-    """
-    Perform log-rebinning on the given binned_data.
-
-    Args:
-    - binned_data (ndarray): 2D array of shape (num_pixels, num_bins), representing the binned spectra
-    - velocity_scale (float): Velocity scale for the log-rebinning
-    - num_bins (int): Number of bins
-    - wavelength (ndarray): 1D array of shape (num_pixels), representing the wavelength array
-    - chunk_size (int, optional): Size of the chunks for processing. Defaults to 1000.
-
-    Returns:
-    - log_binned_data (ndarray): 2D array of shape (len(log_lam), num_bins), representing the log-rebinned data
-    - log_lam (ndarray): 1D array representing the log-rebinned wavelength array
-    """
-    # Setup arrays
+    """Perform log-rebinning on the given binned_data (in-memory path)."""
     wavelength_range = np.array([np.amin(wavelength), np.amax(wavelength)])
 
-    # Perform log-rebinning for the first bin and initialize the log-rebinned data array
     ssp_new, log_lam, _ = log_rebin(
         wavelength_range, binned_data[:, 0], velscale=velocity_scale
     )
     log_binned_data = np.zeros([len(log_lam), num_bins])
 
-    # Do log-rebinning for each chunk of bins
     for i in range(0, num_bins, chunk_size):
         for j in range(i, min(i + chunk_size, num_bins)):
             try:
-                # Perform log-rebinning for the current bin
                 ssp_new, _, _ = log_rebin(
                     wavelength_range, binned_data[:, j], velscale=velocity_scale
                 )
                 log_binned_data[:, j] = ssp_new
             except Exception:
-                # If an error occurs, set the log-rebinned data for the current bin to NaN
                 log_binned_data[:, j] = np.zeros(len(log_lam))
                 log_binned_data[:, j][:] = np.nan
 
@@ -179,20 +341,7 @@ def run_log_rebinning(
 
 
 def saveAllSpectra(config, log_spec, log_error, velscale, logLam, bunit=None):
-    """
-    Save all logarithmically rebinned spectra to file.
-
-    Args:
-        config (dict): Configuration parameters.
-        log_spec (numpy.ndarray): Logarithmically rebinned spectra.
-        log_error (numpy.ndarray): Logarithmically rebinned error spectra.
-        velscale (float): Velocity scale.
-        logLam (numpy.ndarray): Logarithmically rebinned wavelength array.
-        bunit (str, optional): Data unit from input cube (e.g. BUNIT); propagated to metadata.
-
-    Returns:
-        None
-    """
+    """Save all logarithmically rebinned spectra to file."""
     if bunit is None:
         bunit = get_input_bunit(config)
 
@@ -202,23 +351,25 @@ def saveAllSpectra(config, log_spec, log_error, velscale, logLam, bunit=None):
     )
     printStatus.running("Writing: " + config["GENERAL"]["RUN_ID"] + "_AllSpectra.hdf5")
 
-    # Create a new HDF5 file
-    with h5py.File(outfn_spectra, 'w') as f:
-        # Create datasets for the spectra and error spectra
-        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=log_spec.dtype)
-        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=log_error.dtype)
+    with h5py.File(outfn_spectra, "w") as f:
+        nspaxels = log_spec.shape[1]
+        chunk_cols = min(1024, nspaxels)
+        spec_dset = f.create_dataset(
+            "SPEC", shape=log_spec.shape, dtype=log_spec.dtype,
+            chunks=(log_spec.shape[0], chunk_cols),
+        )
+        espec_dset = f.create_dataset(
+            "ESPEC", shape=log_error.shape, dtype=log_error.dtype,
+            chunks=(log_error.shape[0], chunk_cols),
+        )
 
-        # Write the data in chunks
-        chunk_size = 1000  # Adjust this value to fit your memory capacity
+        chunk_size = 1000
         for i in range(0, len(log_spec), chunk_size):
-            spec_dset[i:i+chunk_size] = log_spec[i:i+chunk_size]
-            espec_dset[i:i+chunk_size] = log_error[i:i+chunk_size]
+            spec_dset[i : i + chunk_size] = log_spec[i : i + chunk_size]
+            espec_dset[i : i + chunk_size] = log_error[i : i + chunk_size]
 
-        # Create a dataset for LOGLAM
-        f.create_dataset('LOGLAM', data=logLam)
-
-        # Set attributes
-        f.attrs['VELSCALE'] = velscale
+        f.create_dataset("LOGLAM", data=logLam)
+        f.attrs["VELSCALE"] = velscale
         f.attrs["CRPIX1"] = 1.0
         f.attrs["CRVAL1"] = logLam[0]
         f.attrs["CDELT1"] = logLam[1] - logLam[0]
@@ -234,7 +385,7 @@ def saveAllSpectra(config, log_spec, log_error, velscale, logLam, bunit=None):
 
 
 def saveBinSpectra(config, log_spec, log_error, velscale, logLam, flag, bunit=None):
-    """Save spatially binned spectra and error spectra to disk. Optionally set BUNIT metadata from input cube."""
+    """Save spatially binned spectra and error spectra to disk."""
     if bunit is None:
         bunit = get_input_bunit(config)
 
@@ -251,26 +402,28 @@ def saveBinSpectra(config, log_spec, log_error, velscale, logLam, flag, bunit=No
             "Writing: " + config["GENERAL"]["RUN_ID"] + "_BinSpectra_linear.hdf5"
         )
 
-    # Create a new HDF5 file
-    with h5py.File(outfn_spectra, 'w') as f:
-        # Create datasets for the spectra and error spectra
-        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=log_spec.dtype)
-        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=log_error.dtype)
+    with h5py.File(outfn_spectra, "w") as f:
+        nbins = log_spec.shape[1]
+        chunk_cols = min(1024, nbins)
+        spec_dset = f.create_dataset(
+            "SPEC", shape=log_spec.shape, dtype=log_spec.dtype,
+            chunks=(log_spec.shape[0], chunk_cols),
+        )
+        espec_dset = f.create_dataset(
+            "ESPEC", shape=log_error.shape, dtype=log_error.dtype,
+            chunks=(log_error.shape[0], chunk_cols),
+        )
 
-        # Write the data in chunks
-        chunk_size = 1000  # Adjust this value to fit your memory capacity
+        chunk_size = 1000
         for i in range(0, len(log_spec), chunk_size):
-            spec_dset[i:i+chunk_size] = log_spec[i:i+chunk_size]
-            espec_dset[i:i+chunk_size] = log_error[i:i+chunk_size]
+            spec_dset[i : i + chunk_size] = log_spec[i : i + chunk_size]
+            espec_dset[i : i + chunk_size] = log_error[i : i + chunk_size]
 
-        # Create a dataset for LOGLAM
-        f.create_dataset('LOGLAM', data=logLam)
-
-        # Set attributes
-        f.attrs['VELSCALE'] = velscale
-        f.attrs['CRPIX1'] = 1.0
-        f.attrs['CRVAL1'] = logLam[0]
-        f.attrs['CDELT1'] = logLam[1] - logLam[0]
+        f.create_dataset("LOGLAM", data=logLam)
+        f.attrs["VELSCALE"] = velscale
+        f.attrs["CRPIX1"] = 1.0
+        f.attrs["CRVAL1"] = logLam[0]
+        f.attrs["CDELT1"] = logLam[1] - logLam[0]
         if bunit is not None:
             f.attrs["BUNIT"] = bunit
             spec_dset.attrs["BUNIT"] = bunit
@@ -288,16 +441,13 @@ def saveBinSpectra(config, log_spec, log_error, velscale, logLam, flag, bunit=No
 
 
 def applySpatialBins(binNum, spec, espec, velscale, flag):
-    """
-    The constructed spatial binning scheme is applied to the spectra.
-    """
+    """Apply the spatial binning scheme to the spectra (in-memory path)."""
     printStatus.running("Applying the spatial bins to " + flag + "-data")
     bin_data, bin_error, bin_flux = spatialBinning(binNum, spec, espec)
     printStatus.updateDone(
         "Applying the spatial bins to " + flag + "-data", progressbar=True
     )
     logging.info("Applied spatial bins to " + flag + "-data")
-
     return (bin_data, bin_error, bin_flux)
 
 
@@ -306,7 +456,6 @@ def spatialBinning(binNum, spec, error):
     ubins = np.unique(binNum)
     nbins = len(ubins)
     npix = spec.shape[0]
-    # Map each spaxel to bin index 0..nbins-1; use mask per bin (avoids repeated np.where)
     bin_idx = np.searchsorted(ubins, binNum)
     bin_data = np.zeros([npix, nbins])
     bin_error = np.zeros([npix, nbins])
@@ -315,8 +464,6 @@ def spatialBinning(binNum, spec, error):
     for i in range(nbins):
         k = bin_idx == i
         av_spec = np.nansum(spec[:, k], axis=1)
-        # error is variance; nansum then sqrt for combined sigma
-        # (use nansum to handle NaN variance channels, e.g. from MUSE cube gaps)
         av_err_spec = np.sqrt(np.nansum(error[:, k], axis=1))
         bin_data[:, i] = np.ravel(av_spec)
         bin_error[:, i] = np.ravel(av_err_spec)

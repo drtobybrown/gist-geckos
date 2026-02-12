@@ -410,7 +410,7 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
                 "r",
             ) as errorf:
                 binned_espec_data = errorf["ESPEC"][:].T
-                binned_eloglam_data = errorf["LOGLAM"][:].T
+                binned_eloglam_data = errorf["LOGLAM"][:]
                 
         idx_lamMin = np.where(binned_loglam_data[0] == binned_eloglam_data)[0]
         idx_lamMax = np.where(binned_loglam_data[-1] == binned_eloglam_data)[0]

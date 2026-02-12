@@ -829,23 +829,20 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
     if currentLevel == "BIN":
         # Open the HDF5 file
         with h5py.File(os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + "_BinSpectra.hdf5", 'r') as f:
-            # Read the data from the file
-            spectra = f['SPEC'][:]
-            error = f['ESPEC'][:]
+            # Read the data from the file — direct slice avoids loading full array
             logLam_galaxy = f['LOGLAM'][:]
             velscale = f.attrs['VELSCALE']
 
-        # Select the indices where the wavelength is within the specified range
-        idx_lam = np.where(
-            np.logical_and(
-                np.exp(logLam_galaxy) > config["GAS"]["LMIN"],
-                np.exp(logLam_galaxy) < config["GAS"]["LMAX"],
-            )
-        )[0]
+            idx_lam = np.where(
+                np.logical_and(
+                    np.exp(logLam_galaxy) > config["GAS"]["LMIN"],
+                    np.exp(logLam_galaxy) < config["GAS"]["LMAX"],
+                )
+            )[0]
 
-        # Apply the selection to the spectra, error, and logLam_galaxy arrays
-        spectra = spectra[idx_lam, :]
-        error = error[idx_lam, :]
+            spectra = f['SPEC'][idx_lam, :]
+            error = f['ESPEC'][idx_lam, :]
+
         logLam_galaxy = logLam_galaxy[idx_lam]
 
         npix = spectra.shape[0]
@@ -895,29 +892,26 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
 
     if currentLevel == "SPAXEL":
 
-        # Open the HDF5 file
-        with h5py.File(os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + "_AllSpectra.hdf5", 'r') as f:
-            # Read the data from the file
-            spectra = f['SPEC'][:]
-            error = f['ESPEC'][:]
+        # Open the HDF5 file — read metadata only; spectra loaded lazily per-wave
+        _allspec_path = os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + "_AllSpectra.hdf5"
+        with h5py.File(_allspec_path, 'r') as f:
             logLam_galaxy = f['LOGLAM'][:]
             velscale = f.attrs['VELSCALE']
 
-        # Select the indices where the wavelength is within the specified range
-        idx_lam = np.where(
-            np.logical_and(
-                np.exp(logLam_galaxy) > config["GAS"]["LMIN"],
-                np.exp(logLam_galaxy) < config["GAS"]["LMAX"],
-            )
-        )[0]
+            idx_lam = np.where(
+                np.logical_and(
+                    np.exp(logLam_galaxy) > config["GAS"]["LMIN"],
+                    np.exp(logLam_galaxy) < config["GAS"]["LMAX"],
+                )
+            )[0]
 
-        # Apply the selection to the spectra, error, and logLam_galaxy arrays
-        spectra = spectra[idx_lam, :]
-        error = error[idx_lam, :]
+            npix = len(idx_lam)
+            nbins = f['SPEC'].shape[1]  # number of spaxels
+            # Defer loading spectra/error to parallel execution (wave-based I/O)
+            spectra = None
+            error = None
+
         logLam_galaxy = logLam_galaxy[idx_lam]
-
-        npix = spectra.shape[0]
-        nbins = spectra.shape[1]  # This should now = the number of spaxels
         ubins = np.arange(0, nbins)
         nstmom = config["KIN"]["MOM"]  # Usually = 4
         # # the wav range of the data (observed)
@@ -1144,44 +1138,113 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         printStatus.running("Running PPXF for emission lines analysis in parallel mode")
         logging.info("Running PPXF for emission lines analysis in parallel mode")
 
-        shared_arrays = {
-            "templates": templates,
-            "spectra": spectra,
-            "error": error,
-        }
-        params = {
-            "velscale": velscale,
-            "start": start,
-            "goodPixels_gas": goodPixels_gas,
-            "tpl_comp": tpl_comp,
-            "moments": moments,
-            "offset": offset,
-            "mdeg": emi_mpol_deg,
-            "fixed": fixed,
-            "velscale_ratio": velscale_ratio,
-            "tied": tied,
-            "gas_comp": gas_comp,
-            "gas_names": gas_names,
-            "nbins": nbins,
-            "ubins": ubins,
-        }
         fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan,
                       np.nan, np.nan, np.nan, np.nan, np.nan)
 
         wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
-        executor = BatchExecutor(
-            ncpu=config["GENERAL"]["NCPU"],
-            wave_size=wave_size,
-            scratch_dir=config["GENERAL"]["OUTPUT"],
-        )
-        ppxf_tmp = executor.run(
-            worker_fn=_gas_bin_worker,
-            shared_arrays=shared_arrays,
-            params=params,
-            bin_indices=np.arange(nbins),
-            desc="GAS ppxf",
-            fail_value=fail_value,
-        )
+
+        # ---- Wave-based HDF5 I/O for SPAXEL mode (out-of-core) ----
+        if currentLevel == "SPAXEL" and spectra is None:
+            if wave_size <= 0:
+                wave_size = nbins  # process all at once
+            logging.info(
+                "GAS SPAXEL: wave-based HDF5 I/O, %d spaxels in waves of %d",
+                nbins, wave_size,
+            )
+            ppxf_tmp = [fail_value] * nbins
+
+            for w_start in range(0, nbins, wave_size):
+                w_end = min(w_start + wave_size, nbins)
+                n_wave = w_end - w_start
+                wave_num = w_start // wave_size + 1
+
+                # Read this chunk of spaxels from HDF5
+                with h5py.File(_allspec_path, 'r') as f:
+                    wave_spectra = f['SPEC'][idx_lam, w_start:w_end]
+                    wave_error = f['ESPEC'][idx_lam, w_start:w_end]
+
+                shared_arrays = {
+                    "templates": templates,
+                    "spectra": wave_spectra,
+                    "error": wave_error,
+                }
+                params = {
+                    "velscale": velscale,
+                    "start": start[w_start:w_end],
+                    "goodPixels_gas": goodPixels_gas,
+                    "tpl_comp": tpl_comp,
+                    "moments": moments,
+                    "offset": offset,
+                    "mdeg": emi_mpol_deg,
+                    "fixed": fixed[w_start:w_end],
+                    "velscale_ratio": velscale_ratio,
+                    "tied": tied,
+                    "gas_comp": gas_comp,
+                    "gas_names": gas_names,
+                    "nbins": n_wave,
+                    "ubins": np.arange(n_wave),
+                }
+
+                executor = BatchExecutor(
+                    ncpu=config["GENERAL"]["NCPU"],
+                    wave_size=0,  # waving handled here, not inside executor
+                    scratch_dir=config["GENERAL"]["OUTPUT"],
+                )
+                wave_results = executor.run(
+                    worker_fn=_gas_bin_worker,
+                    shared_arrays=shared_arrays,
+                    params=params,
+                    bin_indices=np.arange(n_wave),
+                    desc=f"GAS ppxf wave {wave_num}",
+                    fail_value=fail_value,
+                )
+
+                for local_i in range(n_wave):
+                    ppxf_tmp[w_start + local_i] = wave_results[local_i]
+
+                del wave_spectra, wave_error, shared_arrays
+                logging.info(
+                    "GAS SPAXEL wave %d/%d complete (%d-%d)",
+                    wave_num, (nbins + wave_size - 1) // wave_size, w_start, w_end - 1,
+                )
+
+        else:
+            # ---- Standard path (BIN level, or SPAXEL with all data loaded) ----
+            shared_arrays = {
+                "templates": templates,
+                "spectra": spectra,
+                "error": error,
+            }
+            params = {
+                "velscale": velscale,
+                "start": start,
+                "goodPixels_gas": goodPixels_gas,
+                "tpl_comp": tpl_comp,
+                "moments": moments,
+                "offset": offset,
+                "mdeg": emi_mpol_deg,
+                "fixed": fixed,
+                "velscale_ratio": velscale_ratio,
+                "tied": tied,
+                "gas_comp": gas_comp,
+                "gas_names": gas_names,
+                "nbins": nbins,
+                "ubins": ubins,
+            }
+
+            executor = BatchExecutor(
+                ncpu=config["GENERAL"]["NCPU"],
+                wave_size=wave_size,
+                scratch_dir=config["GENERAL"]["OUTPUT"],
+            )
+            ppxf_tmp = executor.run(
+                worker_fn=_gas_bin_worker,
+                shared_arrays=shared_arrays,
+                params=params,
+                bin_indices=np.arange(nbins),
+                desc="GAS ppxf",
+                fail_value=fail_value,
+            )
 
         for i in range(nbins):
             gas_kinematics[i, :, :] = ppxf_tmp[i][0]
@@ -1199,9 +1262,22 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
     elif config["GENERAL"]["PARALLEL"] == False:
         printStatus.running("Running PPXF in serial mode")
         logging.info("Running PPXF in serial mode")
+
+        # For SPAXEL mode with deferred loading, read spectra from HDF5 per-spaxel
+        _serial_hdf5 = (currentLevel == "SPAXEL" and spectra is None)
+        _serial_h5f = None
+        if _serial_hdf5:
+            _serial_h5f = h5py.File(_allspec_path, 'r')
+
         for i in range(0, np.max(ubins) + 1):
-            # start[0]=stellar_kinematics[i, :]
             start[0] = start[i]  # Added this in. Check if ok.
+
+            if _serial_hdf5:
+                spec_i = _serial_h5f['SPEC'][idx_lam, i]
+                err_i = _serial_h5f['ESPEC'][idx_lam, i]
+            else:
+                spec_i = spectra[:, i]
+                err_i = error[:, i]
 
             (
                 gas_kinematics[i, :, :],
@@ -1216,8 +1292,8 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
                 stkin_err[i, :],
             ) = run_ppxf(
                 templates,
-                spectra[:, i],
-                error[:, i],
+                spec_i,
+                err_i,
                 velscale,
                 start[i],
                 goodPixels_gas,
@@ -1234,6 +1310,9 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
                 nbins,
                 ubins,
             )
+
+        if _serial_h5f is not None:
+            _serial_h5f.close()
 
         printStatus.updateDone("Running PPXF in serial mode", progressbar=False)
 

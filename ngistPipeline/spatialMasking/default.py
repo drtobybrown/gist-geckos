@@ -78,7 +78,22 @@ def maskDefunctSpaxels(cube):
     Mask defunct spaxels: those with all-NaN spectra or non-positive median flux.
     Spaxels with only some NaNs (e.g. bad pixels) but valid median are kept so
     that real data with occasional bad pixels is not over-masked.
+
+    If the cube provides a precomputed ``defunct_mask`` (out-of-core LazyCube),
+    it is used directly to avoid loading full spectral arrays into memory.
     """
+    # Out-of-core path: defunct_mask was precomputed during readData streaming
+    if "defunct_mask" in cube:
+        masked = cube["defunct_mask"].copy()
+        idx_bad = np.where(masked)[0]
+        logging.info(
+            "Masking defunct spaxels (precomputed): "
+            + str(len(idx_bad))
+            + " spaxels are rejected."
+        )
+        return masked
+
+    # Legacy in-memory path
     spec = cube["spec"]
 
     # Defunct = entirely NaN spectrum OR median flux <= 0 (reject zero/negative)
