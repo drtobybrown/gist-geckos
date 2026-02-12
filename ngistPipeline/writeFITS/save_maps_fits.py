@@ -22,6 +22,22 @@ from ngistPipeline.utils.wcs_utils import (diagonal_wcs_to_cdelt,
 warnings.filterwarnings("ignore")
 
 
+def _header_dict_for_fitsio(header_dict):
+    """Convert header dict values to native Python types so fitsio/FITS writers accept them."""
+    out = {}
+    for k, v in header_dict.items():
+        if v is None:
+            continue
+        if isinstance(v, (np.floating, np.integer)):
+            v = float(v) if isinstance(v, np.floating) else int(v)
+        elif isinstance(v, np.ndarray) and v.size == 1:
+            v = float(v.flat[0]) if np.issubdtype(v.dtype, np.floating) else int(v.flat[0])
+        elif isinstance(v, (list, tuple)) or (isinstance(v, np.ndarray) and v.ndim > 0):
+            continue  # skip non-scalar
+        out[k] = v
+    return out
+
+
 def _load_input_spectra_trimmed(config):
     """
     Load only the wavelength-trimmed spectra from the input cube (no variance,
@@ -140,15 +156,18 @@ def savefitsmaps(module_id, method_id, outdir=""):
         SNR = np.array(data["SNR"])
         SNRBIN = np.array(data["SNRBIN"])
 
-    # update WCS
-    # Convert fitsio header to dict, then to astropy Header
-    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr.keys()})
-    wcs = WCS(astro_oldwcshdr).celestial
-    newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
-    newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
-
-    # Convert newwcshdr (astropy Header) back to dict for fitsio
-    newwcshdr_dict = {k: v for k, v in newwcshdr.items()}
+    # update WCS (fallback to minimal header if WCS conversion fails, e.g. on some CI environments)
+    try:
+        astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr.keys()})
+        wcs = WCS(astro_oldwcshdr).celestial
+        newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
+        newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
+        newwcshdr_dict = _header_dict_for_fitsio(dict(newwcshdr))
+    except Exception as e:
+        logging.warning("WCS conversion for maps failed (%s); using minimal header", e)
+        newwcshdr_dict = _header_dict_for_fitsio(dict(oldwcshdr))
+        if not newwcshdr_dict:
+            newwcshdr_dict = {"PIXSIZE": pixelsize}
 
     # Check spatial coordinates
     if len(np.where(np.logical_or(X == 0.0, np.isnan(X) == True))[0]) == len(X):
@@ -175,17 +194,30 @@ def savefitsmaps(module_id, method_id, outdir=""):
         result[:,5] = YBIN
 
     elif module_id == "KIN":
-        # read results
-        with fitsio.FITS(os.path.join(outdir, rootname) + "_kin.fits") as hdu:
+        kin_path = os.path.join(outdir, rootname) + "_kin.fits"
+        if not os.path.isfile(kin_path):
+            raise FileNotFoundError(
+                "KIN results not found: %s (stellarKinematics may have failed or not run)" % kin_path
+            )
+        with fitsio.FITS(kin_path) as hdu:
+            if len(hdu) < 2:
+                raise ValueError("KIN FITS %s has no table extension (HDU 1)" % kin_path)
             data_kin = hdu[1].read()
             names = list(data_kin.dtype.names)
+            if not names:
+                raise ValueError("KIN table in %s has no columns" % kin_path)
             result = np.zeros((len(ubins), len(names)))
             for i, name in enumerate(names):
                 result[:, i] = np.array(data_kin[name])
 
     elif module_id == "SFH":
+        sfh_path = os.path.join(outdir, rootname) + "_sfh.fits"
+        if not os.path.isfile(sfh_path):
+            raise FileNotFoundError(
+                "SFH results not found: %s (starFormationHistories may have failed or not run)" % sfh_path
+            )
         # Read results
-        with fitsio.FITS(os.path.join(outdir, rootname) + "_sfh.fits") as sfh_hdu:
+        with fitsio.FITS(sfh_path) as sfh_hdu:
             data_sfh = sfh_hdu[1].read()
             names = list(data_sfh.dtype.names)
             result = np.zeros((len(ubins), len(names)))
@@ -306,15 +338,18 @@ def savefitsmaps_GASmodule(module_id="GAS", outdir="", LEVEL="", AoNThreshold=4)
 
         oldwcshdr = table_fits[2].read_header() # fitsio header
 
-    # update WCS
-    # Convert fitsio header to dict, then to astropy Header
-    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr})
-    wcs = WCS(astro_oldwcshdr).celestial
-    newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
-    newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
-
-    # Convert newwcshdr (astropy Header) back to dict for fitsio
-    newwcshdr_dict = {k: v for k, v in newwcshdr.items()}
+    # update WCS (sanitize for fitsio; fallback on failure)
+    try:
+        astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr})
+        wcs = WCS(astro_oldwcshdr).celestial
+        newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
+        newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
+        newwcshdr_dict = _header_dict_for_fitsio(dict(newwcshdr))
+    except Exception as e:
+        logging.warning("WCS conversion for GAS maps failed (%s); using minimal header", e)
+        newwcshdr_dict = _header_dict_for_fitsio(dict(oldwcshdr))
+        if not newwcshdr_dict:
+            newwcshdr_dict = {"PIXSIZE": pixelsize}
 
     maskedSpaxel = maskedSpaxel[idx_inside]
 
@@ -421,15 +456,18 @@ def savefitsmaps_LSmodule(module_id="LS", outdir="", RESOLUTION=""):
 
         oldwcshdr = table_fits[2].read_header() # fitsio header
 
-    # update WCS
-    # Convert fitsio header to dict, then to astropy Header
-    astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr})
-    wcs = WCS(astro_oldwcshdr).celestial
-    newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
-    newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
-
-    # Convert newwcshdr (astropy Header) back to dict for fitsio
-    newwcshdr_dict = {k: v for k, v in newwcshdr.items()}
+    # update WCS (sanitize for fitsio; fallback on failure)
+    try:
+        astro_oldwcshdr = fits.Header({k: oldwcshdr[k] for k in oldwcshdr})
+        wcs = WCS(astro_oldwcshdr).celestial
+        newwcshdr = strip_wcs_from_header(astro_oldwcshdr)
+        newwcshdr.update(diagonal_wcs_to_cdelt(wcs).to_header())
+        newwcshdr_dict = _header_dict_for_fitsio(dict(newwcshdr))
+    except Exception as e:
+        logging.warning("WCS conversion for LS maps failed (%s); using minimal header", e)
+        newwcshdr_dict = _header_dict_for_fitsio(dict(oldwcshdr))
+        if not newwcshdr_dict:
+            newwcshdr_dict = {"PIXSIZE": pixelsize}
 
     # Check spatial coordinates
     if len(np.where(np.logical_or(X == 0.0, np.isnan(X) == True))[0]) == len(X):

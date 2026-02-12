@@ -18,7 +18,7 @@ def prepareTemplates_Module(
     """
     This function calls the prepareTemplates routine specified by the user.
     When CACHE_TEMPLATES is True (default), prepared templates are read from or
-    written to a cache under TEMPLATE_DIR/.prepared to speed up later runs.
+    written to a cache under TEMPLATE_DIR/.prepared or scratch to speed up later runs.
     """
     use_cache = config["GENERAL"].get("CACHE_TEMPLATES", True)
     if use_cache:

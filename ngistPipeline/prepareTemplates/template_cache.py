@@ -79,8 +79,10 @@ def read_cache(path):
         return None
     try:
         with h5py.File(path, "r") as f:
-            templates = np.asarray(f["templates"])
-            logLam = np.asarray(f["logLam"])
+            # Load as float64, C-contiguous so result matches fresh prepareSpectralTemplateLibrary
+            # and ppxf/downstream do not see dtype or layout differences
+            templates = np.asarray(f["templates"], dtype=np.float64, order="C")
+            logLam = np.asarray(f["logLam"], dtype=np.float64, order="C")
             lamRange = np.asarray(f["lamRange"])
             ntemplates = int(f.attrs["ntemplates"])
             ncomb = int(f.attrs["ncomb"])
@@ -89,9 +91,9 @@ def read_cache(path):
             nAlpha = int(f.attrs["nAlpha"])
             sortInGrid = bool(f.attrs.get("sortInGrid", False))
             if sortInGrid and "logAge_grid" in f:
-                logAge_grid = np.asarray(f["logAge_grid"])
-                metal_grid = np.asarray(f["metal_grid"])
-                alpha_grid = np.asarray(f["alpha_grid"])
+                logAge_grid = np.asarray(f["logAge_grid"], dtype=np.float64, order="C")
+                metal_grid = np.asarray(f["metal_grid"], dtype=np.float64, order="C")
+                alpha_grid = np.asarray(f["alpha_grid"], dtype=np.float64, order="C")
             else:
                 logAge_grid = np.nan
                 metal_grid = np.nan
