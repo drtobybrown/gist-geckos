@@ -15,6 +15,11 @@ from printStatus import printStatus
 from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import _prepareTemplates
+from ngistPipeline.stellarKinematics.ppxf_kin_wrapper import (
+    build_grid_config,
+    _build_coarse_idx,
+    _build_fine_window_idx,
+)
 
 robust_sigma = _auxiliary.robust_sigma
 
@@ -102,6 +107,124 @@ def run_ppxf_firsttime(
     normalized_weights = pp.weights / np.sum(pp.weights)
     optimal_template = reshaped_templates @ normalized_weights
     return optimal_template
+
+
+def run_ppxf_firsttime_adaptive(
+    templates_full,
+    nAges,
+    nMetal,
+    nAlpha,
+    log_bin_data,
+    log_bin_error,
+    velscale,
+    start,
+    goodPixels,
+    nmoments,
+    offset,
+    mdeg,
+    regul_err,
+    fixed,
+    velscale_ratio,
+    npix,
+    nbins,
+    coarse_step,
+    fine_radius,
+):
+    """Coarse-to-fine first-time SFH run: coarse pPXF -> best template -> fine pPXF -> optimal template."""
+    step_a, step_m, step_al = coarse_step[0], coarse_step[1], coarse_step[2]
+    coarse_idx = _build_coarse_idx(nAges, nMetal, nAlpha, step_a, step_m, step_al)
+    templates_coarse = templates_full[:, coarse_idx]
+    ncomb_coarse = len(coarse_idx)
+
+    median_log_bin_data = np.nanmedian(log_bin_data)
+    log_bin_error_n = log_bin_error / median_log_bin_data
+    log_bin_data_n = log_bin_data / median_log_bin_data
+    valid = (
+        np.isfinite(log_bin_data_n[goodPixels])
+        & np.isfinite(log_bin_error_n[goodPixels])
+        & (log_bin_error_n[goodPixels] > 0)
+    )
+    goodPixels = goodPixels[valid]
+    nan_data = ~np.isfinite(log_bin_data_n)
+    nan_err = ~np.isfinite(log_bin_error_n) | (log_bin_error_n <= 0)
+    log_bin_data_n[nan_data] = 0.0
+    log_bin_error_n[nan_err] = 1e10
+
+    pp_coarse = ppxf(
+        templates_coarse,
+        log_bin_data_n,
+        log_bin_error_n,
+        velscale,
+        start,
+        goodpixels=goodPixels,
+        plot=False,
+        quiet=True,
+        moments=nmoments,
+        degree=-1,
+        vsyst=offset,
+        mdegree=mdeg,
+        regul=1.0 / regul_err,
+        fixed=fixed,
+        velscale_ratio=velscale_ratio,
+    )
+    if not np.any(np.isfinite(pp_coarse.weights)):
+        return run_ppxf_firsttime(
+            templates_full,
+            log_bin_data,
+            log_bin_error,
+            velscale,
+            start,
+            goodPixels,
+            nmoments,
+            offset,
+            -1,
+            mdeg,
+            regul_err,
+            False,
+            fixed,
+            velscale_ratio,
+            npix,
+            nAges * nMetal * nAlpha,
+            nbins,
+            [0],
+        )
+    best_local = np.argmax(pp_coarse.weights)
+    best_full_t = int(coarse_idx[best_local])
+    j0 = best_full_t % nAges
+    k0 = (best_full_t // nAges) % nMetal
+    i0 = best_full_t // (nAges * nMetal)
+    ra, rm, ral = fine_radius[0], fine_radius[1], fine_radius[2]
+    fine_idx = _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, ra, rm, ral)
+    if len(fine_idx) <= len(coarse_idx):
+        normalized_weights = pp_coarse.weights / np.sum(pp_coarse.weights)
+        return templates_full[:, coarse_idx] @ normalized_weights
+
+    templates_fine = templates_full[:, fine_idx]
+    n_start = max(2, min(nmoments, len(pp_coarse.sol)))
+    start_fine = np.zeros(max(2, nmoments))
+    start_fine[:n_start] = np.asarray(pp_coarse.sol[:n_start], dtype=np.float64)
+
+    pp_fine = ppxf(
+        templates_fine,
+        log_bin_data_n,
+        log_bin_error_n,
+        velscale,
+        start_fine,
+        goodpixels=goodPixels,
+        plot=False,
+        quiet=True,
+        moments=nmoments,
+        degree=-1,
+        vsyst=offset,
+        mdegree=mdeg,
+        regul=1.0 / regul_err,
+        fixed=fixed,
+        velscale_ratio=velscale_ratio,
+    )
+    normalized_weights = pp_fine.weights / np.sum(pp_fine.weights)
+    optimal_template = templates_fine @ normalized_weights
+    return optimal_template
+
 
 def run_ppxf(
     templates,
@@ -661,8 +784,13 @@ def save_sfh(
 
 def _sfh_bin_worker(bin_idx, shared, params):
     """Module-level worker for BatchExecutor: SFH fit for one bin."""
+    templates_use = (
+        shared["templates"][:, params["reduced_idx"]]
+        if params.get("reduced_idx") is not None
+        else shared["templates"]
+    )
     return run_ppxf(
-        shared["templates"],
+        templates_use,
         shared["bin_data"][:, bin_idx].copy(),
         shared["noise"][:, bin_idx].copy(),
         params["velscale"],
@@ -737,6 +865,14 @@ def extractStarFormationHistories(config):
         'SFH',
         sortInGrid=True,
     )
+
+    reduced_idx, adaptive_grid_config = build_grid_config(
+        config["SFH"], nAges, nMetal, nAlpha, log_prefix="SFH "
+    )
+    if reduced_idx is not None:
+        ncomb_use = len(reduced_idx)
+    else:
+        ncomb_use = ncomb
 
     # Define file paths
     gas_cleaned_file = os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + '_gas-cleaned_'+config['GAS']['LEVEL']+'.fits'
@@ -851,28 +987,52 @@ def extractStarFormationHistories(config):
     comb_espec = np.nanmean(bin_err[:,:],axis=1)
     optimal_template_init = [0]
 
-    optimal_template_out = run_ppxf_firsttime(
-        templates,
-        comb_spec ,
-        comb_espec,
-        velscale,
-        start[0,:],
-        goodPixels_sfh,
-        config['SFH']['MOM'],
-        offset,-1,
-        config['SFH']['MDEG'],
-        config['SFH']['REGUL_ERR'],
-        config["SFH"]["DOCLEAN"],
-        fixed,
-        velscale_ratio,
-        npix,
-        ncomb,
-        nbins,
-        optimal_template_init,
-    )
+    if adaptive_grid_config is not None:
+        optimal_template_comb = run_ppxf_firsttime_adaptive(
+            templates,
+            nAges,
+            nMetal,
+            nAlpha,
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            goodPixels_sfh,
+            config['SFH']['MOM'],
+            offset,
+            config['SFH']['MDEG'],
+            config['SFH']['REGUL_ERR'],
+            fixed,
+            velscale_ratio,
+            npix,
+            nbins,
+            adaptive_grid_config["coarse_step"],
+            adaptive_grid_config["fine_radius"],
+        )
+    else:
+        templates_comb = templates[:, reduced_idx] if reduced_idx is not None else templates
+        optimal_template_comb = run_ppxf_firsttime(
+            templates_comb,
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            goodPixels_sfh,
+            config['SFH']['MOM'],
+            offset,
+            -1,
+            config['SFH']['MDEG'],
+            config['SFH']['REGUL_ERR'],
+            config["SFH"]["DOCLEAN"],
+            fixed,
+            velscale_ratio,
+            npix,
+            ncomb_use,
+            nbins,
+            optimal_template_init,
+        )
 
     # now define the optimal template that we'll use throughout
-    optimal_template_comb = optimal_template_out
 
     # ====================
     EBV_init = 0.1 # PHANGS value initial guess
@@ -902,7 +1062,7 @@ def extractStarFormationHistories(config):
             "fixed": fixed,
             "velscale_ratio": velscale_ratio,
             "npix": npix,
-            "ncomb": ncomb,
+            "ncomb": ncomb_use,
             "nbins": nbins,
             "optimal_template_comb": optimal_template_comb,
             "EBV_init": EBV_init,
@@ -911,6 +1071,7 @@ def extractStarFormationHistories(config):
             "logAge_grid": logAge_grid,
             "metal_grid": metal_grid,
             "alpha_grid": alpha_grid,
+            "reduced_idx": reduced_idx,
         }
         fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan,
                       np.nan, np.nan, np.nan, np.nan)
@@ -933,12 +1094,18 @@ def extractStarFormationHistories(config):
         # Unpack results
         for i in range(nbins):
             ppxf_result[i,:config['SFH']['MOM']] = ppxf_tmp[i][0]
-            w_row[i,:] = ppxf_tmp[i][1]
+            if reduced_idx is not None:
+                w_row[i, reduced_idx] = ppxf_tmp[i][1]
+                w_row_MC_iter[i, :, reduced_idx] = ppxf_tmp[i][4]["w_row_MC_iter"]
+                w_row_MC_mean[i, reduced_idx] = ppxf_tmp[i][4]["w_row_MC_mean"]
+                w_row_MC_err[i, reduced_idx] = ppxf_tmp[i][4]["w_row_MC_err"]
+            else:
+                w_row[i, :] = ppxf_tmp[i][1]
+                w_row_MC_iter[i,:,:] = ppxf_tmp[i][4]["w_row_MC_iter"]
+                w_row_MC_mean[i,:] = ppxf_tmp[i][4]["w_row_MC_mean"]
+                w_row_MC_err[i,:] = ppxf_tmp[i][4]["w_row_MC_err"]
             ppxf_bestfit[i,:] = ppxf_tmp[i][2]
             optimal_template[i,:] = ppxf_tmp[i][3]
-            w_row_MC_iter[i,:,:] = ppxf_tmp[i][4]["w_row_MC_iter"]
-            w_row_MC_mean[i,:] = ppxf_tmp[i][4]["w_row_MC_mean"]
-            w_row_MC_err[i,:] = ppxf_tmp[i][4]["w_row_MC_err"]
             mean_results_MC_iter[i,:,:] = ppxf_tmp[i][4]["mean_results_MC_iter"]
             mean_results_MC_mean[i,:]  = ppxf_tmp[i][4]["mean_results_MC_mean"]
             mean_results_MC_err[i,:]  = ppxf_tmp[i][4]["mean_results_MC_err"]
@@ -952,10 +1119,11 @@ def extractStarFormationHistories(config):
     if config['GENERAL']['PARALLEL'] == False:
         printStatus.running("Running PPXF in serial mode")
         logging.info("Running PPXF in serial mode")
+        templates_serial = templates[:, reduced_idx] if reduced_idx is not None else templates
         for i in range(nbins):
             (
                 ppxf_result[i,:config['SFH']['MOM']],
-                w_row[i,:],
+                w_row_bin,
                 ppxf_bestfit[i,:],
                 optimal_template[i,:],
                 mc_results_i,
@@ -964,7 +1132,7 @@ def extractStarFormationHistories(config):
                 snr_postfit[i],
                 EBV[i],
             ) = run_ppxf(
-                templates,
+                templates_serial,
                 bin_data[:,i],
                 noise[:,i],
                 velscale,
@@ -975,11 +1143,11 @@ def extractStarFormationHistories(config):
                 -1,
                 config['SFH']['MDEG'],
                 config['SFH']['REGUL_ERR'],
-                config["KIN"]["DOCLEAN"],
+                config["SFH"]["DOCLEAN"],
                 fixed,
                 velscale_ratio,
                 npix,
-                ncomb,
+                ncomb_use,
                 nbins,
                 i,
                 optimal_template_comb,
@@ -990,6 +1158,10 @@ def extractStarFormationHistories(config):
                 metal_grid,
                 alpha_grid
             )
+            if reduced_idx is not None:
+                w_row[i, reduced_idx] = w_row_bin
+            else:
+                w_row[i, :] = w_row_bin
             w_row_MC_iter[i,:,:] = mc_results_i["w_row_MC_iter"]
             w_row_MC_mean[i,:] = mc_results_i["w_row_MC_mean"]
             w_row_MC_err[i,:] = mc_results_i["w_row_MC_err"]

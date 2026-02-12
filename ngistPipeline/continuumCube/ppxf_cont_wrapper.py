@@ -12,6 +12,10 @@ from printStatus import printStatus
 from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import _prepareTemplates
+from ngistPipeline.stellarKinematics.ppxf_kin_wrapper import (
+    build_grid_config,
+    _run_ppxf_adaptive,
+)
 
 robust_sigma = _auxiliary.robust_sigma
 
@@ -341,8 +345,42 @@ def save_ppxf(
 
 def _cont_bin_worker(bin_idx, shared, params):
     """Module-level worker for BatchExecutor: continuum fit for one bin."""
+    ad = params.get("adaptive_grid_config")
+    if ad is not None:
+        out = _run_ppxf_adaptive(
+            shared["templates"],
+            ad["nAges"],
+            ad["nMetal"],
+            ad["nAlpha"],
+            shared["bin_data"][:, bin_idx].copy(),
+            shared["noise"][:, bin_idx].copy(),
+            params["velscale"],
+            shared["start"][bin_idx, :].copy(),
+            None,
+            params["goodPixels_ppxf"].copy(),
+            params["nmoments"],
+            -1,
+            params["mdeg"],
+            params["reddening"],
+            params["doclean"],
+            params["logLam"],
+            params["offset"],
+            params["velscale_ratio"],
+            params["nsims"],
+            params["nbins"],
+            bin_idx,
+            params["optimal_template_comb"],
+            ad["coarse_step"],
+            ad["fine_radius"],
+        )
+        return out[0], out[1], out[2], out[3], out[4], out[5], out[6]
+    templates_use = (
+        shared["templates"][:, params["reduced_idx"]]
+        if params.get("reduced_idx") is not None
+        else shared["templates"]
+    )
     return run_ppxf(
-        shared["templates"],
+        templates_use,
         shared["bin_data"][:, bin_idx].copy(),
         shared["noise"][:, bin_idx].copy(),
         params["velscale"],
@@ -396,15 +434,9 @@ def createContinuumCube(config):
 
     LSF_Data, LSF_Templates = _auxiliary.getLSF(config, "CONT")  # added input of module
 
-    # Prepare templates
+    # Prepare templates (full return for optional ADAPTIVE_GRID / REDUCED_GRID)
     velscale_ratio = 2
-    logging.info("Using full spectral library for PPXF")
-    (
-        templates,
-        lamRange_spmod,
-        logLam_template,
-        ntemplates,
-    ) = _prepareTemplates.prepareTemplates_Module(
+    full_template_result = _prepareTemplates.prepareTemplates_Module(
         config,
         config["CONT"]["LMIN"],
         config["CONT"]["LMAX"],
@@ -412,10 +444,23 @@ def createContinuumCube(config):
         LSF_Data,
         LSF_Templates,
         "CONT",
-    )[
-        :4
-    ]
+    )
+    (
+        templates,
+        lamRange_spmod,
+        logLam_template,
+        ntemplates,
+    ) = full_template_result[:4]
     templates = templates.reshape((templates.shape[0], ntemplates))
+
+    reduced_idx, adaptive_grid_config = None, None
+    if len(full_template_result) >= 11:
+        nAges, nMetal, nAlpha = full_template_result[8], full_template_result[9], full_template_result[10]
+        reduced_idx, adaptive_grid_config = build_grid_config(
+            config["CONT"], nAges, nMetal, nAlpha, log_prefix="CONT "
+        )
+    if reduced_idx is None and adaptive_grid_config is None:
+        logging.info("Using full spectral library for PPXF")
 
     # Last preparatory steps
     offset = (logLam_template[0] - logLam[0]) * C
@@ -479,35 +524,64 @@ def createContinuumCube(config):
     comb_espec = np.nanmean(bin_err[:, :], axis=1)
     optimal_template_init = [0]
 
-    (
-        tmp_ppxf_result,
-        tmp_ppxf_reddening,
-        tmp_ppxf_bestfit,
-        optimal_template_out,
-        tmp_mc_results,
-        tmp_formal_error,
-        tmp_spectral_mask,
-    ) = run_ppxf(
-        templates,
-        comb_spec,
-        comb_espec,
-        velscale,
-        start[0, :],
-        goodPixels_ppxf,
-        config["CONT"]["MOM"],
-        config["CONT"]["MDEG"],
-        config["CONT"]["REDDENING"],
-        config["CONT"]["DOCLEAN"],
-        logLam,
-        offset,
-        velscale_ratio,
-        nsims,
-        nbins,
-        0,
-        optimal_template_init,
-    )
-    # now define the optimal template that we'll use throughout
-    optimal_template_comb = optimal_template_out
+    if adaptive_grid_config is not None:
+        out = _run_ppxf_adaptive(
+            templates,
+            adaptive_grid_config["nAges"],
+            adaptive_grid_config["nMetal"],
+            adaptive_grid_config["nAlpha"],
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            None,
+            goodPixels_ppxf,
+            config["CONT"]["MOM"],
+            -1,
+            config["CONT"]["MDEG"],
+            config["CONT"]["REDDENING"],
+            config["CONT"]["DOCLEAN"],
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            0,
+            optimal_template_init,
+            adaptive_grid_config["coarse_step"],
+            adaptive_grid_config["fine_radius"],
+        )
+        optimal_template_comb = out[3]
+    else:
+        templates_comb = templates[:, reduced_idx] if reduced_idx is not None else templates
+        (
+            tmp_ppxf_result,
+            tmp_ppxf_reddening,
+            tmp_ppxf_bestfit,
+            optimal_template_out,
+            tmp_mc_results,
+            tmp_formal_error,
+            tmp_spectral_mask,
+        ) = run_ppxf(
+            templates_comb,
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            goodPixels_ppxf,
+            config["CONT"]["MOM"],
+            config["CONT"]["MDEG"],
+            config["CONT"]["REDDENING"],
+            config["CONT"]["DOCLEAN"],
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            0,
+            optimal_template_init,
+        )
+        optimal_template_comb = optimal_template_out
 
     # ====================
     # Run PPXF
@@ -535,6 +609,8 @@ def createContinuumCube(config):
             "nsims": nsims,
             "nbins": nbins,
             "optimal_template_comb": optimal_template_comb,
+            "reduced_idx": reduced_idx,
+            "adaptive_grid_config": adaptive_grid_config,
         }
         fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
 
@@ -567,35 +643,32 @@ def createContinuumCube(config):
     elif config["GENERAL"]["PARALLEL"] == False:
         printStatus.running("Running PPXF in serial mode")
         logging.info("Running PPXF in serial mode")
+        shared_serial = {"templates": templates, "bin_data": bin_data, "noise": noise, "start": start}
+        params_serial = {
+            "velscale": velscale,
+            "goodPixels_ppxf": goodPixels_ppxf,
+            "nmoments": config["CONT"]["MOM"],
+            "mdeg": config["CONT"]["MDEG"],
+            "reddening": config["CONT"]["REDDENING"],
+            "doclean": config["CONT"]["DOCLEAN"],
+            "logLam": logLam,
+            "offset": offset,
+            "velscale_ratio": velscale_ratio,
+            "nsims": nsims,
+            "nbins": nbins,
+            "optimal_template_comb": optimal_template_comb,
+            "reduced_idx": reduced_idx,
+            "adaptive_grid_config": adaptive_grid_config,
+        }
         for i in range(0, nbins):
-            # for i in range(1, 2):
-            (
-                ppxf_result[i, : config["CONT"]["MOM"]],
-                ppxf_reddening[i],
-                ppxf_bestfit[i, :],
-                optimal_template[i, :],
-                mc_results[i, : config["CONT"]["MOM"]],
-                formal_error[i, : config["CONT"]["MOM"]],
-                spectral_mask[i, :],
-            ) = run_ppxf(
-                templates,
-                bin_data[:, i],
-                noise[:, i],
-                velscale,
-                start[i, :],
-                goodPixels_ppxf,
-                config["CONT"]["MOM"],
-                config["CONT"]["MDEG"],
-                config["CONT"]["REDDENING"],
-                config["CONT"]["DOCLEAN"],
-                logLam,
-                offset,
-                velscale_ratio,
-                nsims,
-                nbins,
-                i,
-                optimal_template_comb,
-            )
+            res = _cont_bin_worker(i, shared_serial, params_serial)
+            ppxf_result[i, : config["CONT"]["MOM"]] = res[0]
+            ppxf_reddening[i] = res[1]
+            ppxf_bestfit[i, :] = res[2]
+            optimal_template[i, :] = res[3]
+            mc_results[i, : config["CONT"]["MOM"]] = res[4]
+            formal_error[i, : config["CONT"]["MOM"]] = res[5]
+            spectral_mask[i, :] = res[6]
         printStatus.updateDone("Running PPXF in serial mode", progressbar=False)
 
     print(

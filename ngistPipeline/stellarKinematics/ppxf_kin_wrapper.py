@@ -25,6 +25,15 @@ PURPOSE:
   Basically, it acts as an interface between pipeline and the pPXF routine from
   Cappellari & Emsellem 2004 (ui.adsabs.harvard.edu/?#abs/2004PASP..116..138C;
   ui.adsabs.harvard.edu/?#abs/2017MNRAS.466..798C).
+
+ADAPTIVE COARSE-TO-FINE TEMPLATE GRID (ADAPTIVE_GRID):
+  When KIN.ADAPTIVE_GRID is set (e.g. [4, 2, 1] or [4, 2, 1, 2, 1, 0]):
+  1. First pass: run pPXF on a sparse (age, metal, alpha) grid using the given steps.
+  2. Find the best template from the returned weights (argmax).
+  3. Second pass: run pPXF on a fine subgrid (a box around that best template).
+  4. Return the second-pass result so kinematics are full-resolution in that region.
+  This reduces cost when the full grid is large (e.g. 50x15x3) while keeping the
+  same best-fit behaviour. Config takes precedence over REDUCED_GRID when both are set.
 """
 
 def run_ppxf(
@@ -291,7 +300,10 @@ def run_ppxf(
         if pp.reddening is not None:
             pp.reddening = pp.reddening * median_log_bin_data
 
-        return(
+        # Weights (length = n_templates) for adaptive coarse-to-fine grid refinement
+        weights_out = np.asarray(pp.weights, dtype=np.float64)
+
+        return (
             pp.sol[:],
             pp.reddening,
             pp.bestfit,
@@ -300,6 +312,7 @@ def run_ppxf(
             formal_error,
             spectral_mask,
             snr_postfit,
+            weights_out,
         )
 
     except Exception as e:
@@ -307,7 +320,201 @@ def run_ppxf(
             logging.warning(
                 "PPXF failed on combined spectrum (or first bin): %s", e, exc_info=True
             )
-        return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+        return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, None)
+
+
+def _build_coarse_idx(nAges, nMetal, nAlpha, step_age, step_metal, step_alpha):
+    """Linear indices for a coarse (age, metal, alpha) grid. Order: age fastest, then metal, then alpha."""
+    idx_list = []
+    for i in range(nAlpha):
+        for k in range(nMetal):
+            for j in range(nAges):
+                if (j % step_age == 0) and (k % step_metal == 0) and (i % step_alpha == 0):
+                    t = j + nAges * k + nAges * nMetal * i
+                    idx_list.append(t)
+    return np.array(idx_list, dtype=np.intp)
+
+
+def _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, radius_age, radius_metal, radius_alpha):
+    """Linear indices for a (age, metal, alpha) box around (j0, k0, i0)."""
+    j_lo = max(0, j0 - radius_age)
+    j_hi = min(nAges, j0 + radius_age + 1)
+    k_lo = max(0, k0 - radius_metal)
+    k_hi = min(nMetal, k0 + radius_metal + 1)
+    i_lo = max(0, i0 - radius_alpha)
+    i_hi = min(nAlpha, i0 + radius_alpha + 1)
+    idx_list = []
+    for i in range(i_lo, i_hi):
+        for k in range(k_lo, k_hi):
+            for j in range(j_lo, j_hi):
+                t = j + nAges * k + nAges * nMetal * i
+                idx_list.append(t)
+    return np.array(idx_list, dtype=np.intp)
+
+
+def build_grid_config(module_config, nAges, nMetal, nAlpha, log_prefix=""):
+    """
+    Build reduced_idx and/or adaptive_grid_config from a module config (KIN, CONT, SFH, etc.).
+    Returns (reduced_idx, adaptive_grid_config). Either can be None.
+    ADAPTIVE_GRID takes precedence over REDUCED_GRID when both are set.
+    """
+    reduced_idx = None
+    adaptive_grid_config = None
+    valid = (
+        np.isscalar(nAges) and np.isscalar(nMetal) and np.isscalar(nAlpha)
+        and nAges > 0 and nMetal > 0 and nAlpha > 0
+    )
+    if not valid:
+        return reduced_idx, adaptive_grid_config
+    if module_config.get("ADAPTIVE_GRID"):
+        ag = module_config["ADAPTIVE_GRID"]
+        if isinstance(ag, (list, tuple)) and len(ag) >= 3:
+            coarse_step = [max(1, int(ag[0])), max(1, int(ag[1])), max(1, int(ag[2]))]
+            fine_radius = [2, 1, 0]
+            if len(ag) >= 6:
+                fine_radius = [int(ag[3]), int(ag[4]), int(ag[5])]
+            adaptive_grid_config = {
+                "nAges": nAges,
+                "nMetal": nMetal,
+                "nAlpha": nAlpha,
+                "coarse_step": coarse_step,
+                "fine_radius": fine_radius,
+            }
+            logging.info(
+                "%sadaptive grid: coarse steps [%d,%d,%d], fine radius [%d,%d,%d]",
+                log_prefix, coarse_step[0], coarse_step[1], coarse_step[2],
+                fine_radius[0], fine_radius[1], fine_radius[2],
+            )
+    elif module_config.get("REDUCED_GRID"):
+        steps = module_config["REDUCED_GRID"]
+        if isinstance(steps, (list, tuple)) and len(steps) >= 3:
+            sa, sm, salpha = max(1, int(steps[0])), max(1, int(steps[1])), max(1, int(steps[2]))
+            idx_list = []
+            for i in range(nAlpha):
+                for k in range(nMetal):
+                    for j in range(nAges):
+                        if (j % sa == 0) and (k % sm == 0) and (i % salpha == 0):
+                            idx_list.append(j + nAges * k + nAges * nMetal * i)
+            reduced_idx = np.array(idx_list, dtype=np.intp)
+            logging.info(
+                "%sreduced grid: %d templates (steps age=%d metal=%d alpha=%d)",
+                log_prefix, len(reduced_idx), sa, sm, salpha,
+            )
+    return reduced_idx, adaptive_grid_config
+
+
+def _run_ppxf_adaptive(
+    templates_full,
+    nAges,
+    nMetal,
+    nAlpha,
+    log_bin_data,
+    log_bin_error,
+    velscale,
+    start,
+    bias,
+    goodPixels,
+    nmoments,
+    adeg,
+    mdeg,
+    reddening,
+    doclean,
+    logLam,
+    offset,
+    velscale_ratio,
+    nsims,
+    nbins,
+    i,
+    optimal_template_in,
+    coarse_step,
+    fine_radius,
+):
+    """
+    Coarse-to-fine template grid: run pPXF on a sparse grid, find best (age, metal, alpha),
+    then re-run on a fine subgrid around it. Returns the same 8-tuple as run_ppxf (no weights).
+    """
+    sa, sm, salpha = max(1, int(coarse_step[0])), max(1, int(coarse_step[1])), max(1, int(coarse_step[2]))
+    coarse_idx = _build_coarse_idx(nAges, nMetal, nAlpha, sa, sm, salpha)
+    templates_coarse = templates_full[:, coarse_idx]
+
+    out = run_ppxf(
+        templates_coarse,
+        log_bin_data,
+        log_bin_error,
+        velscale,
+        start,
+        bias,
+        goodPixels,
+        nmoments,
+        adeg,
+        mdeg,
+        reddening,
+        doclean,
+        logLam,
+        offset,
+        velscale_ratio,
+        nsims,
+        nbins,
+        i,
+        optimal_template_in,
+    )
+    (
+        coarse_sol,
+        coarse_reddening,
+        coarse_bestfit,
+        coarse_optimal,
+        coarse_mc,
+        coarse_formal,
+        coarse_mask,
+        coarse_snr,
+        weights_coarse,
+    ) = out
+
+    if weights_coarse is None or not np.any(np.isfinite(weights_coarse)):
+        return out[:8] + (None,)
+    if not np.all(np.isfinite(coarse_sol)):
+        return out[:8] + (None,)
+
+    best_local = np.argmax(weights_coarse)
+    best_full_t = int(coarse_idx[best_local])
+    j0 = best_full_t % nAges
+    k0 = (best_full_t // nAges) % nMetal
+    i0 = best_full_t // (nAges * nMetal)
+
+    ra, rm, ral = int(fine_radius[0]), int(fine_radius[1]), int(fine_radius[2])
+    fine_idx = _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, ra, rm, ral)
+
+    if len(fine_idx) <= len(coarse_idx):
+        return out[:8] + (None,)
+
+    templates_fine = templates_full[:, fine_idx]
+    n_start = max(2, min(nmoments, len(coarse_sol)))
+    start_fine = np.zeros(max(2, nmoments))
+    start_fine[:n_start] = np.asarray(coarse_sol[:n_start], dtype=np.float64)
+    opt_in_fine = [np.asarray(coarse_optimal, dtype=np.float64)]
+
+    out_fine = run_ppxf(
+        templates_fine,
+        log_bin_data,
+        log_bin_error,
+        velscale,
+        start_fine,
+        bias,
+        goodPixels,
+        nmoments,
+        adeg,
+        mdeg,
+        reddening,
+        doclean,
+        logLam,
+        offset,
+        velscale_ratio,
+        nsims,
+        nbins,
+        i,
+        opt_in_fine,
+    )
+    return out_fine[:8] + (None,)
 
 
 def save_ppxf(
@@ -569,8 +776,42 @@ def _kin_bin_worker(bin_idx, shared, params):
     tuple
         Same 8-element tuple as :func:`run_ppxf`.
     """
+    ad = params.get("adaptive_grid_config")
+    if ad is not None:
+        return _run_ppxf_adaptive(
+            shared["templates"],
+            ad["nAges"],
+            ad["nMetal"],
+            ad["nAlpha"],
+            shared["bin_data"][:, bin_idx].copy(),
+            shared["noise"][:, bin_idx].copy(),
+            params["velscale"],
+            shared["start"][bin_idx, :].copy(),
+            params["bias"],
+            params["goodPixels_ppxf"].copy(),
+            params["nmoments"],
+            params["adeg"],
+            params["mdeg"],
+            params["reddening"],
+            params["doclean"],
+            params["logLam"],
+            params["offset"],
+            params["velscale_ratio"],
+            params["nsims"],
+            params["nbins"],
+            bin_idx,
+            params["optimal_template_comb"],
+            ad["coarse_step"],
+            ad["fine_radius"],
+        )
+
+    templates_use = (
+        shared["templates"][:, params["reduced_idx"]]
+        if params.get("reduced_idx") is not None
+        else shared["templates"]
+    )
     return run_ppxf(
-        shared["templates"],
+        templates_use,
         shared["bin_data"][:, bin_idx].copy(),
         shared["noise"][:, bin_idx].copy(),
         params["velscale"],
@@ -642,13 +883,7 @@ def extractStellarKinematics(config):
 
     # Prepare templates
     velscale_ratio = 2
-    logging.info("Using full spectral library for PPXF")
-    (
-        templates,
-        lamRange_spmod,
-        logLam_template,
-        ntemplates,
-    ) = _prepareTemplates.prepareTemplates_Module(
+    full_template_result = _prepareTemplates.prepareTemplates_Module(
         config,
         config["KIN"]["LMIN"],
         config["KIN"]["LMAX"],
@@ -656,10 +891,26 @@ def extractStellarKinematics(config):
         LSF_Data,
         LSF_Templates,
         "KIN",
-    )[
-        :4
-    ]
+    )
+    (
+        templates,
+        lamRange_spmod,
+        logLam_template,
+        ntemplates,
+    ) = full_template_result[:4]
     templates = templates.reshape((templates.shape[0], ntemplates))
+
+    # Optional reduced or adaptive (coarse-to-fine) age-metal-alpha grid
+    reduced_idx = None
+    adaptive_grid_config = None
+    nAges, nMetal, nAlpha = None, None, None
+    if len(full_template_result) >= 11:
+        nAges, nMetal, nAlpha = full_template_result[8], full_template_result[9], full_template_result[10]
+        reduced_idx, adaptive_grid_config = build_grid_config(
+            config["KIN"], nAges, nMetal, nAlpha, log_prefix="KIN "
+        )
+    if reduced_idx is None and adaptive_grid_config is None:
+        logging.info("Using full spectral library for PPXF")
 
     # Last preparatory steps
     offset = (logLam_template[0] - logLam[0]) * C
@@ -724,36 +975,75 @@ def extractStellarKinematics(config):
     comb_espec = np.nanmean(bin_err[:, :], axis=1)
     optimal_template_init = [0]
 
-    (
-        tmp_ppxf_result,
-        tmp_ppxf_reddening,
-        tmp_ppxf_bestfit,
-        optimal_template_out,
-        tmp_mc_results,
-        tmp_formal_error,
-        tmp_spectral_mask,
-        tmp_snr_postfit,
-    ) = run_ppxf(
-        templates,
-        comb_spec,
-        comb_espec,
-        velscale,
-        start[0, :],
-        bias,
-        goodPixels_ppxf,
-        config["KIN"]["MOM"],
-        config["KIN"]["ADEG"],
-        config["KIN"]["MDEG"],
-        config["KIN"]["REDDENING"],
-        config["KIN"]["DOCLEAN"],
-        logLam,
-        offset,
-        velscale_ratio,
-        nsims,
-        nbins,
-        0,
-        optimal_template_init,
-    )
+    if adaptive_grid_config is not None:
+        (
+            _,
+            _,
+            _,
+            optimal_template_out,
+            _,
+            _,
+            _,
+            _,
+        ) = _run_ppxf_adaptive(
+            templates,
+            adaptive_grid_config["nAges"],
+            adaptive_grid_config["nMetal"],
+            adaptive_grid_config["nAlpha"],
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            bias,
+            goodPixels_ppxf,
+            config["KIN"]["MOM"],
+            config["KIN"]["ADEG"],
+            config["KIN"]["MDEG"],
+            config["KIN"]["REDDENING"],
+            config["KIN"]["DOCLEAN"],
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            0,
+            optimal_template_init,
+            adaptive_grid_config["coarse_step"],
+            adaptive_grid_config["fine_radius"],
+        )
+    else:
+        templates_comb = templates[:, reduced_idx] if reduced_idx is not None else templates
+        (
+            tmp_ppxf_result,
+            tmp_ppxf_reddening,
+            tmp_ppxf_bestfit,
+            optimal_template_out,
+            tmp_mc_results,
+            tmp_formal_error,
+            tmp_spectral_mask,
+            tmp_snr_postfit,
+            _,
+        ) = run_ppxf(
+            templates_comb,
+            comb_spec,
+            comb_espec,
+            velscale,
+            start[0, :],
+            bias,
+            goodPixels_ppxf,
+            config["KIN"]["MOM"],
+            config["KIN"]["ADEG"],
+            config["KIN"]["MDEG"],
+            config["KIN"]["REDDENING"],
+            config["KIN"]["DOCLEAN"],
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            0,
+            optimal_template_init,
+        )
     # If combined run failed, use sentinel so per-bin runs use full template library
     _valid = (
         optimal_template_out is not None
@@ -806,10 +1096,12 @@ def extractStellarKinematics(config):
             "nsims": nsims,
             "nbins": nbins,
             "optimal_template_comb": optimal_template_comb,
+            "reduced_idx": reduced_idx,
+            "adaptive_grid_config": adaptive_grid_config,
         }
 
         # Sentinel for failed bins (must match run_ppxf failure return)
-        fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
+        fail_value = (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, None)
 
         wave_size = config["GENERAL"].get("WAVE_SIZE", 0)
         executor = BatchExecutor(
@@ -842,37 +1134,76 @@ def extractStellarKinematics(config):
     elif config["GENERAL"]["PARALLEL"] == False:
         printStatus.running("Running PPXF in serial mode")
         logging.info("Running PPXF in serial mode")
-        for i in range(0, nbins):
-            (
-                ppxf_result[i, : config["KIN"]["MOM"]],
-                ppxf_reddening[i],
-                ppxf_bestfit[i, :],
-                optimal_template[i, :],
-                mc_results[i, : config["KIN"]["MOM"]],
-                formal_error[i, : config["KIN"]["MOM"]],
-                spectral_mask[i, :],
-                snr_postfit[i],
-            ) = run_ppxf(
-                templates,
-                bin_data[:, i],
-                noise[:, i],
-                velscale,
-                start[i, :],
-                bias,
-                goodPixels_ppxf,
-                config["KIN"]["MOM"],
-                config["KIN"]["ADEG"],
-                config["KIN"]["MDEG"],
-                config["KIN"]["REDDENING"],
-                config["KIN"]["DOCLEAN"],
-                logLam,
-                offset,
-                velscale_ratio,
-                nsims,
-                nbins,
-                i,
-                optimal_template_comb,
-            )
+        if adaptive_grid_config is not None:
+            for i in range(0, nbins):
+                out_serial = _run_ppxf_adaptive(
+                    templates,
+                    adaptive_grid_config["nAges"],
+                    adaptive_grid_config["nMetal"],
+                    adaptive_grid_config["nAlpha"],
+                    bin_data[:, i],
+                    noise[:, i],
+                    velscale,
+                    start[i, :],
+                    bias,
+                    goodPixels_ppxf,
+                    config["KIN"]["MOM"],
+                    config["KIN"]["ADEG"],
+                    config["KIN"]["MDEG"],
+                    config["KIN"]["REDDENING"],
+                    config["KIN"]["DOCLEAN"],
+                    logLam,
+                    offset,
+                    velscale_ratio,
+                    nsims,
+                    nbins,
+                    i,
+                    optimal_template_comb,
+                    adaptive_grid_config["coarse_step"],
+                    adaptive_grid_config["fine_radius"],
+                )
+                ppxf_result[i, : config["KIN"]["MOM"]] = out_serial[0]
+                ppxf_reddening[i] = out_serial[1]
+                ppxf_bestfit[i, :] = out_serial[2]
+                optimal_template[i, :] = out_serial[3]
+                mc_results[i, : config["KIN"]["MOM"]] = out_serial[4]
+                formal_error[i, : config["KIN"]["MOM"]] = out_serial[5]
+                spectral_mask[i, :] = out_serial[6]
+                snr_postfit[i] = out_serial[7]
+        else:
+            templates_serial = templates[:, reduced_idx] if reduced_idx is not None else templates
+            for i in range(0, nbins):
+                (
+                    ppxf_result[i, : config["KIN"]["MOM"]],
+                    ppxf_reddening[i],
+                    ppxf_bestfit[i, :],
+                    optimal_template[i, :],
+                    mc_results[i, : config["KIN"]["MOM"]],
+                    formal_error[i, : config["KIN"]["MOM"]],
+                    spectral_mask[i, :],
+                    snr_postfit[i],
+                    _,
+                ) = run_ppxf(
+                    templates_serial,
+                    bin_data[:, i],
+                    noise[:, i],
+                    velscale,
+                    start[i, :],
+                    bias,
+                    goodPixels_ppxf,
+                    config["KIN"]["MOM"],
+                    config["KIN"]["ADEG"],
+                    config["KIN"]["MDEG"],
+                    config["KIN"]["REDDENING"],
+                    config["KIN"]["DOCLEAN"],
+                    logLam,
+                    offset,
+                    velscale_ratio,
+                    nsims,
+                    nbins,
+                    i,
+                    optimal_template_comb,
+                )
         printStatus.updateDone("Running PPXF in serial mode", progressbar=False)
 
     print(

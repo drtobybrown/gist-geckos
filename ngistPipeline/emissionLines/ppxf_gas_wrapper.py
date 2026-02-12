@@ -14,6 +14,10 @@ from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.auxiliary.batch_ppxf import BatchExecutor
 from ngistPipeline.prepareTemplates import (_prepareTemplates,
                                            prepare_gas_templates)
+from ngistPipeline.stellarKinematics.ppxf_kin_wrapper import (
+    build_grid_config,
+    _build_coarse_idx,
+)
 
 # Physical constants
 C = 299792.458  # speed of light in km/s
@@ -866,14 +870,8 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
             windx = bin_id == i
             n_spaxels_per_bin[i] = np.sum(windx)
 
-        # Prepare templates - This is for the stellar templates
-        logging.info("Using full spectral library for ppxf on BIN level")
-        (
-            templates,
-            lamRange_spmod,
-            logLam_template,
-            n_templates,
-        ) = _prepareTemplates.prepareTemplates_Module(
+        # Prepare templates - This is for the stellar templates (full return for ADAPTIVE_GRID/REDUCED_GRID)
+        full_star_result = _prepareTemplates.prepareTemplates_Module(
             config,
             config["GAS"]["LMIN"],
             config["GAS"]["LMAX"],
@@ -881,10 +879,24 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
             LSF_Data,
             LSF_Templates,
             "GAS",
-        )[
-            :4
-        ]
+        )
+        (templates, lamRange_spmod, logLam_template, n_templates) = full_star_result[:4]
         star_templates = templates.reshape((templates.shape[0], n_templates))
+        gas_stellar_idx = None
+        if len(full_star_result) >= 11:
+            nAges, nMetal, nAlpha = full_star_result[8], full_star_result[9], full_star_result[10]
+            reduced_idx, adaptive_grid_config = build_grid_config(
+                config["GAS"], nAges, nMetal, nAlpha, log_prefix="GAS "
+            )
+            if reduced_idx is not None:
+                gas_stellar_idx = reduced_idx
+            elif adaptive_grid_config is not None:
+                cs = adaptive_grid_config["coarse_step"]
+                gas_stellar_idx = _build_coarse_idx(nAges, nMetal, nAlpha, cs[0], cs[1], cs[2])
+        if gas_stellar_idx is None:
+            logging.info("Using full spectral library for ppxf on BIN level")
+        else:
+            star_templates = star_templates[:, gas_stellar_idx]
 
         offset = (logLam_template[0] - logLam_galaxy[0]) * C  # km/s
         # error        = np.ones((npix,nbins))
@@ -932,14 +944,8 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
                 windx
             )  # This should be an array of ones, so useless?
 
-        # Prepare templates - This is for the stellar templates
-        logging.info("Using full spectral library for ppxf on SPAXEL level")
-        (
-            templates,
-            lamRange_spmod,
-            logLam_template,
-            n_templates,
-        ) = _prepareTemplates.prepareTemplates_Module(
+        # Prepare templates - This is for the stellar templates (full return for ADAPTIVE_GRID/REDUCED_GRID)
+        full_star_result = _prepareTemplates.prepareTemplates_Module(
             config,
             config["GAS"]["LMIN"],
             config["GAS"]["LMAX"],
@@ -947,10 +953,24 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
             LSF_Data,
             LSF_Templates,
             "GAS",
-        )[
-            :4
-        ]
+        )
+        (templates, lamRange_spmod, logLam_template, n_templates) = full_star_result[:4]
         star_templates = templates.reshape((templates.shape[0], n_templates))
+        gas_stellar_idx = None
+        if len(full_star_result) >= 11:
+            nAges, nMetal, nAlpha = full_star_result[8], full_star_result[9], full_star_result[10]
+            reduced_idx, adaptive_grid_config = build_grid_config(
+                config["GAS"], nAges, nMetal, nAlpha, log_prefix="GAS "
+            )
+            if reduced_idx is not None:
+                gas_stellar_idx = reduced_idx
+            elif adaptive_grid_config is not None:
+                cs = adaptive_grid_config["coarse_step"]
+                gas_stellar_idx = _build_coarse_idx(nAges, nMetal, nAlpha, cs[0], cs[1], cs[2])
+        if gas_stellar_idx is None:
+            logging.info("Using full spectral library for ppxf on SPAXEL level")
+        else:
+            star_templates = star_templates[:, gas_stellar_idx]
 
         offset = (logLam_template[0] - logLam_galaxy[0]) * C  # km/s
 
