@@ -201,8 +201,14 @@ def addGISTHeaderComment(config):
 def saveConfigToHeader(hdu, config):
     """
     Write each key-value pair of the given config subsection into the FITS header.
-    config should be a dict of header-compatible (scalar/string) values.
+    config should be a dict; scalar/string values are written as-is. Lists (e.g. ADAPTIVE_GRID,
+    REDUCED_GRID) are converted to comma-separated strings so they are FITS-legal.
     """
     for i in config.keys():
-        hdu.header[i] = config[i]
+        val = config[i]
+        if isinstance(val, (list, tuple)):
+            val = ",".join(str(x) for x in val)
+        elif isinstance(val, dict):
+            val = str(val)
+        hdu.header[i] = val
     return hdu
