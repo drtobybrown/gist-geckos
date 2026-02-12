@@ -52,6 +52,8 @@ KIN :
   MDEG : 0
   REDDENING : null # As opposed to None
   MC_PPXF : 0
+  # REDUCED_GRID : [2, 2, 1]  # Optional: [step_age, step_metal, step_alpha]; use every Nth grid point for faster ppxf (e.g. 2,2,1 -> ~1/4 templates)
+  ADAPTIVE_GRID : [4, 2, 1]  # Coarse-to-fine (default): [step_age, step_metal, step_alpha] for 1st pass, then refine on subgrid (default radius [2,1,0]). Comment out for full grid.
   LSF_TEMP : 'lsf_MILES' # Path of the file specifying the line-spread-function of the spectral templates. The specified path is relative to the configDir path in defaultDir.
   TEMPLATE_SET : 'miles'
   LIBRARY : 'MILES/'
