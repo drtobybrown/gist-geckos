@@ -131,8 +131,57 @@ def run_ppxf_firsttime_adaptive(
     fine_radius,
 ):
     """Coarse-to-fine first-time SFH run: coarse pPXF -> best template -> fine pPXF -> optimal template."""
+    n_templates = templates_full.shape[1]
+    n_grid = nAges * nMetal * nAlpha
+    if n_templates < n_grid:
+        logging.warning(
+            "SFH adaptive: template count %d < grid %d; using full-template first run",
+            n_templates, n_grid,
+        )
+        return run_ppxf_firsttime(
+            templates_full,
+            log_bin_data,
+            log_bin_error,
+            velscale,
+            start,
+            goodPixels,
+            nmoments,
+            offset,
+            -1,
+            mdeg,
+            regul_err,
+            False,
+            fixed,
+            velscale_ratio,
+            npix,
+            n_templates,
+            nbins,
+            [0],
+        )
     step_a, step_m, step_al = coarse_step[0], coarse_step[1], coarse_step[2]
     coarse_idx = _build_coarse_idx(nAges, nMetal, nAlpha, step_a, step_m, step_al)
+    coarse_idx = coarse_idx[coarse_idx < n_templates]
+    if len(coarse_idx) == 0:
+        return run_ppxf_firsttime(
+            templates_full,
+            log_bin_data,
+            log_bin_error,
+            velscale,
+            start,
+            goodPixels,
+            nmoments,
+            offset,
+            -1,
+            mdeg,
+            regul_err,
+            False,
+            fixed,
+            velscale_ratio,
+            npix,
+            n_templates,
+            nbins,
+            [0],
+        )
     templates_coarse = templates_full[:, coarse_idx]
     ncomb_coarse = len(coarse_idx)
 
@@ -195,6 +244,7 @@ def run_ppxf_firsttime_adaptive(
     i0 = best_full_t // (nAges * nMetal)
     ra, rm, ral = fine_radius[0], fine_radius[1], fine_radius[2]
     fine_idx = _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, ra, rm, ral)
+    fine_idx = fine_idx[fine_idx < n_templates]
     if len(fine_idx) <= len(coarse_idx):
         normalized_weights = pp_coarse.weights / np.sum(pp_coarse.weights)
         return templates_full[:, coarse_idx] @ normalized_weights
@@ -988,27 +1038,55 @@ def extractStarFormationHistories(config):
     optimal_template_init = [0]
 
     if adaptive_grid_config is not None:
-        optimal_template_comb = run_ppxf_firsttime_adaptive(
-            templates,
-            nAges,
-            nMetal,
-            nAlpha,
-            comb_spec,
-            comb_espec,
-            velscale,
-            start[0, :],
-            goodPixels_sfh,
-            config['SFH']['MOM'],
-            offset,
-            config['SFH']['MDEG'],
-            config['SFH']['REGUL_ERR'],
-            fixed,
-            velscale_ratio,
-            npix,
-            nbins,
-            adaptive_grid_config["coarse_step"],
-            adaptive_grid_config["fine_radius"],
-        )
+        try:
+            optimal_template_comb = run_ppxf_firsttime_adaptive(
+                templates,
+                nAges,
+                nMetal,
+                nAlpha,
+                comb_spec,
+                comb_espec,
+                velscale,
+                start[0, :],
+                goodPixels_sfh,
+                config['SFH']['MOM'],
+                offset,
+                config['SFH']['MDEG'],
+                config['SFH']['REGUL_ERR'],
+                fixed,
+                velscale_ratio,
+                npix,
+                nbins,
+                adaptive_grid_config["coarse_step"],
+                adaptive_grid_config["fine_radius"],
+            )
+        except Exception as e:
+            logging.warning(
+                "SFH adaptive first-time run failed (%s); falling back to full template set",
+                e,
+                exc_info=True,
+            )
+            templates_comb = templates
+            optimal_template_comb = run_ppxf_firsttime(
+                templates_comb,
+                comb_spec,
+                comb_espec,
+                velscale,
+                start[0, :],
+                goodPixels_sfh,
+                config['SFH']['MOM'],
+                offset,
+                -1,
+                config['SFH']['MDEG'],
+                config['SFH']['REGUL_ERR'],
+                config["SFH"]["DOCLEAN"],
+                fixed,
+                velscale_ratio,
+                npix,
+                nAges * nMetal * nAlpha,
+                nbins,
+                optimal_template_init,
+            )
     else:
         templates_comb = templates[:, reduced_idx] if reduced_idx is not None else templates
         optimal_template_comb = run_ppxf_firsttime(

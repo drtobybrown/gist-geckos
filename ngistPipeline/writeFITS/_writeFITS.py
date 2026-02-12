@@ -33,7 +33,7 @@ def generateFITS(config, module):
             printStatus.updateDone("Producing table binned maps in FITS format")
             logging.info("Produced table binned maps in FITS format")
         except Exception as e:
-            printStatus.updateFailed("Producing table binned maps maps in FITS format")
+            printStatus.updateFailed("Producing table binned maps in FITS format")
             logging.error(e, exc_info=True)
             logging.error("Failed to produce table binned maps.")
 

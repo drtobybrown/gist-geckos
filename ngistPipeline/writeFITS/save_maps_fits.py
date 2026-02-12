@@ -108,7 +108,17 @@ def savefitsmaps(module_id, method_id, outdir=""):
 
     # Read bintable using fitsio
     table_path = os.path.join(outdir, rootname) + "_table.fits"
+    if not os.path.isfile(table_path):
+        raise FileNotFoundError(
+            "Table FITS not found: %s (output dir may be wrong or spatial binning did not write it)"
+            % table_path
+        )
     with fitsio.FITS(table_path) as table_fits:
+        if len(table_fits) < 3:
+            raise ValueError(
+                "Table FITS has %d extension(s); need at least 3 (primary, table, WCS)"
+                % len(table_fits)
+            )
         data = table_fits[1].read()
 
         idx_inside = np.where(data["BIN_ID"] >= 0)[0]
@@ -121,7 +131,9 @@ def savefitsmaps(module_id, method_id, outdir=""):
         ubins = np.unique(np.abs(np.array(data["BIN_ID"])))
 
         hdr0 = table_fits[0].read_header()
-        pixelsize = hdr0["PIXSIZE"]
+        pixelsize = float(hdr0["PIXSIZE"])
+        if pixelsize <= 0 or not np.isfinite(pixelsize):
+            raise ValueError("Table primary header PIXSIZE must be a positive number (got %s)" % pixelsize)
 
         oldwcshdr = table_fits[2].read_header() # fitsio header
 
@@ -224,10 +236,12 @@ def savefitsmaps(module_id, method_id, outdir=""):
             xmax = np.max(X)
             ymin = np.min(Y)
             ymax = np.max(Y)
-            npixels_x = int(np.round((xmax - xmin) / pixelsize) + 1)
-            npixels_y = int(np.round((ymax - ymin) / pixelsize) + 1)
+            npixels_x = max(1, int(np.round((xmax - xmin) / pixelsize) + 1))
+            npixels_y = max(1, int(np.round((ymax - ymin) / pixelsize) + 1))
             i = np.array(np.round((X - xmin) / pixelsize), dtype=np.int32)
             j = np.array(np.round((Y - ymin) / pixelsize), dtype=np.int32)
+            i = np.clip(i, 0, npixels_x - 1)
+            j = np.clip(j, 0, npixels_y - 1)
             image = np.full((npixels_x, npixels_y), np.nan)
             # Reverse the i index to each row of the image
             # because ra increases West-East (right-left in image plane)
@@ -258,15 +272,24 @@ def savefitsmaps_GASmodule(module_id="GAS", outdir="", LEVEL="", AoNThreshold=4)
 
     runname = outdir
     rootname = outdir.rstrip("/").split("/")[-1]
+    mask_path = os.path.join(outdir, rootname) + "_mask.fits"
+    table_path = os.path.join(outdir, rootname) + "_table.fits"
+    if not os.path.isfile(mask_path):
+        raise FileNotFoundError("Mask FITS not found: %s" % mask_path)
+    if not os.path.isfile(table_path):
+        raise FileNotFoundError("Table FITS not found: %s" % table_path)
 
     # Construct a mask for defunct spaxels
-    with fitsio.FITS(os.path.join(outdir, rootname) + "_mask.fits") as mhdu:
+    with fitsio.FITS(mask_path) as mhdu:
         mask = mhdu[1].read()["MASK_DEFUNCT"]
     maskedSpaxel = np.array(mask, dtype=bool)
 
     # Read bintable using fitsio
-    table_path = os.path.join(outdir, rootname) + "_table.fits"
     with fitsio.FITS(table_path) as table_fits:
+        if len(table_fits) < 3:
+            raise ValueError(
+                "Table FITS has %d extension(s); need at least 3" % len(table_fits)
+            )
         data = table_fits[1].read()
 
         idx_inside = np.where(data["BIN_ID"] >= 0)[0]
@@ -277,7 +300,9 @@ def savefitsmaps_GASmodule(module_id="GAS", outdir="", LEVEL="", AoNThreshold=4)
         ubins = np.unique(np.abs(binNum_long))
 
         hdr0 = table_fits[0].read_header()
-        pixelsize = hdr0["PIXSIZE"]
+        pixelsize = float(hdr0["PIXSIZE"])
+        if pixelsize <= 0 or not np.isfinite(pixelsize):
+            raise ValueError("Table primary header PIXSIZE must be positive (got %s)" % pixelsize)
 
         oldwcshdr = table_fits[2].read_header() # fitsio header
 
@@ -345,10 +370,12 @@ def savefitsmaps_GASmodule(module_id="GAS", outdir="", LEVEL="", AoNThreshold=4)
             xmax = np.max(X)
             ymin = np.min(Y)
             ymax = np.max(Y)
-            npixels_x = int(np.round((xmax - xmin) / pixelsize) + 1)
-            npixels_y = int(np.round((ymax - ymin) / pixelsize) + 1)
+            npixels_x = max(1, int(np.round((xmax - xmin) / pixelsize) + 1))
+            npixels_y = max(1, int(np.round((ymax - ymin) / pixelsize) + 1))
             col = np.array(np.round((X - xmin) / pixelsize), dtype=np.int32)
             row = np.array(np.round((Y - ymin) / pixelsize), dtype=np.int32)
+            col = np.clip(col, 0, npixels_x - 1)
+            row = np.clip(row, 0, npixels_y - 1)
             image = np.full((npixels_x, npixels_y), np.nan)
 
             # reverse the index to flip vertically
