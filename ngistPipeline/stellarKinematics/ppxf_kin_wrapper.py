@@ -815,6 +815,7 @@ def extractStellarKinematics(config):
         executor = BatchExecutor(
             ncpu=config["GENERAL"]["NCPU"],
             wave_size=wave_size,
+            scratch_dir=config["GENERAL"]["OUTPUT"],
         )
         ppxf_tmp = executor.run(
             worker_fn=_kin_bin_worker,

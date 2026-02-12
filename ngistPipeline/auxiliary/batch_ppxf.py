@@ -7,31 +7,31 @@ nodes (typically 16 CPUs) processing up to millions of spectra.
 
 Key optimizations over the existing joblib approach
 ---------------------------------------------------
-1. **In-memory shared arrays** via ``multiprocessing.shared_memory``
-   (POSIX shared memory backed by ``/dev/shm`` on Linux).  Eliminates
-   the joblib dump/load memmap-to-disk overhead entirely — data stays
-   in RAM at all times.
-2. **Dynamic load balancing** via ``imap_unordered`` with adaptive
+1. **Dynamic load balancing** via ``imap_unordered`` with adaptive
    mini-chunks.  Avoids the straggler problem of static chunking where
    one slow chunk blocks overall progress.
-3. **Wave processing** for memory-bounded execution of millions of
+2. **Wave processing** for memory-bounded execution of millions of
    spectra.  Configurable wave size keeps peak RSS within CANFAR limits.
-4. **Adaptive chunk sizing** - automatically tunes chunk granularity to
+3. **Adaptive chunk sizing** - automatically tunes chunk granularity to
    balance IPC overhead against scheduling flexibility.
-5. **Unified API** - one call replaces ~70 lines of duplicated
+4. **Unified API** - one call replaces ~70 lines of duplicated
    boilerplate in each wrapper module.
 
-Start-method strategy
+Data-sharing strategy
 ---------------------
-We default to **spawn + SharedMemory** on all platforms.  This avoids
-deadlocks that arise when ``fork()`` is called after libraries like
-h5py, numpy BLAS, or Python's logging module have created internal
-threads/locks.  SharedMemory segments live in ``/dev/shm`` (RAM-backed
-tmpfs on Linux), so there is no disk I/O penalty.
+Workers need read-only access to large arrays (templates, spectra,
+noise).  We use **spawn** to avoid fork-after-thread deadlocks, and
+share data via one of three backends (auto-selected):
 
-To opt into raw ``fork`` COW mode (faster pool startup, but risks
-deadlocks if any threads are active), set the environment variable
-``NGIST_USE_FORK=1``.
+1. **SharedMemory** — POSIX shared memory (``/dev/shm``).  Fastest,
+   but ``/dev/shm`` is often limited to 64 MB in containers.
+2. **Memmap on scratch** — numpy memmap files on ``/scratch`` (fast
+   local SSD on CANFAR).  Reliable fallback when ``/dev/shm`` is small.
+3. **Memmap on output dir** — last resort if ``/scratch`` is not
+   writable.
+
+Set ``NGIST_USE_FORK=1`` to force fork-COW mode (no disk I/O at all,
+but risks deadlocks if threads are active).
 
 Usage
 -----
@@ -62,7 +62,9 @@ import multiprocessing as mp
 import multiprocessing.shared_memory
 import numpy as np
 import os
+import shutil
 import sys
+import tempfile
 import time
 
 from tqdm import tqdm
@@ -91,11 +93,10 @@ def _init_worker_fork(shared_dict, worker_fn, params):
 
 
 def _init_worker_shm(shm_meta, worker_fn, params):
-    """Pool initializer for spawn mode.
+    """Pool initializer for SharedMemory mode.
 
     Reconstructs numpy arrays from named ``SharedMemory`` segments
-    (backed by /dev/shm on Linux — pure RAM, no disk I/O) so every
-    worker sees the same physical pages.
+    so every worker sees the same physical pages.
     """
     global _worker_shared, _worker_fn, _worker_params
     _worker_fn = worker_fn
@@ -107,6 +108,22 @@ def _init_worker_shm(shm_meta, worker_fn, params):
         _worker_shared[key] = arr
         # prevent garbage-collection of the SharedMemory handle
         _worker_shared[f"__shm_{key}"] = shm
+
+
+def _init_worker_memmap(memmap_meta, worker_fn, params):
+    """Pool initializer for memmap mode.
+
+    Opens read-only numpy memmap files so every worker can access the
+    shared arrays without copying them into each process's heap.
+    """
+    global _worker_shared, _worker_fn, _worker_params
+    _worker_fn = worker_fn
+    _worker_params = params
+    _worker_shared = {}
+    for key, (path, shape, dtype_str) in memmap_meta.items():
+        _worker_shared[key] = np.memmap(
+            path, dtype=np.dtype(dtype_str), mode="r", shape=shape,
+        )
 
 
 def _dispatch_chunk(chunk):
@@ -145,14 +162,21 @@ class BatchExecutor:
         finer-grained dynamic scheduling at the cost of more IPC
         messages.  ``8`` is a good default for typical ppxf runtimes
         (0.1–5 s per bin).
+    scratch_dir : str or None
+        Directory for memmap temp files when ``/dev/shm`` is too small.
+        Defaults to ``/scratch`` if writable, else the current working
+        directory.
     """
 
-    def __init__(self, ncpu=4, wave_size=0, chunk_target=8):
+    def __init__(self, ncpu=4, wave_size=0, chunk_target=8,
+                 scratch_dir=None):
         self.ncpu = max(1, ncpu)
         self.wave_size = wave_size
         self.chunk_target = chunk_target
+        self.scratch_dir = scratch_dir
         self._can_fork = self._check_fork_available()
         self._shm_handles = []
+        self._memmap_dir = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -163,10 +187,7 @@ class BatchExecutor:
 
         Raw ``fork()`` after threads have been created (by numpy BLAS,
         h5py, Python logging, etc.) can deadlock.  We therefore default
-        to the safe ``spawn + SharedMemory`` path on **all** platforms.
-
-        SharedMemory segments live in ``/dev/shm`` on Linux (RAM-backed
-        tmpfs), so there is zero disk I/O penalty compared to fork COW.
+        to the safe ``spawn`` path on **all** platforms.
 
         Set ``NGIST_USE_FORK=1`` to force fork mode if you are certain
         no thread-unsafe libraries have been loaded.
@@ -180,6 +201,30 @@ class BatchExecutor:
             return True
         except ValueError:
             return False
+
+    @staticmethod
+    def _shm_available_bytes():
+        """Return free bytes in /dev/shm, or 0 if unavailable."""
+        try:
+            if os.path.exists("/dev/shm"):
+                st = os.statvfs("/dev/shm")
+                return st.f_bavail * st.f_frsize
+        except OSError:
+            pass
+        return 0
+
+    @staticmethod
+    def _total_array_bytes(shared_arrays):
+        return sum(arr.nbytes for arr in shared_arrays.values())
+
+    def _resolve_scratch(self):
+        """Find a writable scratch directory for memmap temp files."""
+        if self.scratch_dir and os.access(self.scratch_dir, os.W_OK):
+            return self.scratch_dir
+        if os.access("/scratch", os.W_OK):
+            return "/scratch"
+        # Last resort: current working directory
+        return os.getcwd()
 
     def _compute_chunks(self, bin_indices):
         """Split *bin_indices* into adaptive mini-chunks.
@@ -221,7 +266,7 @@ class BatchExecutor:
                 worker_fn(bin_idx: int, shared: dict, params: dict) -> tuple
 
             *shared* contains large read-only arrays (templates, spectra,
-            noise …).  *params* holds small scalars / arrays.
+            noise ...).  *params* holds small scalars / arrays.
 
         shared_arrays : dict[str, np.ndarray]
             Large read-only arrays shared across all workers.
@@ -286,7 +331,7 @@ class BatchExecutor:
         return all_results
 
     # ------------------------------------------------------------------
-    # Pool-level execution
+    # Pool-level execution (auto-selects backend)
     # ------------------------------------------------------------------
     def _run_pool(self, worker_fn, shared_arrays, params, bin_indices,
                   desc, fail_value):
@@ -303,12 +348,34 @@ class BatchExecutor:
                     results, idx_map, desc,
                 )
             else:
-                self._run_shm(
-                    worker_fn, shared_arrays, params, chunks,
-                    results, idx_map, desc,
-                )
+                # Check if /dev/shm is large enough for SharedMemory
+                needed = self._total_array_bytes(shared_arrays)
+                available = self._shm_available_bytes()
+                # Require 20% headroom
+                if available > needed * 1.2:
+                    logger.info(
+                        "Using SharedMemory (need %.0f MB, "
+                        "/dev/shm has %.0f MB free)",
+                        needed / 1e6, available / 1e6,
+                    )
+                    self._run_shm(
+                        worker_fn, shared_arrays, params, chunks,
+                        results, idx_map, desc,
+                    )
+                else:
+                    scratch = self._resolve_scratch()
+                    logger.info(
+                        "Using memmap on %s (need %.0f MB, "
+                        "/dev/shm only has %.0f MB free)",
+                        scratch, needed / 1e6, available / 1e6,
+                    )
+                    self._run_memmap(
+                        worker_fn, shared_arrays, params, chunks,
+                        results, idx_map, desc, scratch,
+                    )
         except Exception:
             self._cleanup_shm()
+            self._cleanup_memmap()
             raise
 
         elapsed = time.time() - t0
@@ -342,7 +409,7 @@ class BatchExecutor:
                         results[local_i] = result
 
     # ------------------------------------------------------------------
-    # SharedMemory mode (default on all platforms — safe, no disk I/O)
+    # SharedMemory mode — used when /dev/shm is large enough
     # ------------------------------------------------------------------
     def _run_shm(self, worker_fn, shared_arrays, params, chunks,
                  results, idx_map, desc):
@@ -377,6 +444,48 @@ class BatchExecutor:
         finally:
             self._cleanup_shm()
 
+    # ------------------------------------------------------------------
+    # Memmap mode — fallback when /dev/shm is too small (e.g. containers)
+    # ------------------------------------------------------------------
+    def _run_memmap(self, worker_fn, shared_arrays, params, chunks,
+                    results, idx_map, desc, scratch):
+        self._memmap_dir = tempfile.mkdtemp(prefix="ngist_batch_", dir=scratch)
+        try:
+            memmap_meta = {}
+            for key, arr in shared_arrays.items():
+                arr = np.ascontiguousarray(arr)
+                path = os.path.join(self._memmap_dir, f"{key}.dat")
+                mm = np.memmap(
+                    path, dtype=arr.dtype, mode="w+", shape=arr.shape,
+                )
+                mm[:] = arr
+                mm.flush()
+                del mm  # close the write handle
+                memmap_meta[key] = (path, tuple(arr.shape), arr.dtype.str)
+
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(
+                self.ncpu,
+                initializer=_init_worker_memmap,
+                initargs=(memmap_meta, worker_fn, params),
+            ) as pool:
+                for chunk_results in tqdm(
+                    pool.imap_unordered(_dispatch_chunk, chunks),
+                    total=len(chunks),
+                    desc=desc,
+                    ascii=" #",
+                    unit="chunk",
+                ):
+                    for bin_idx, result in chunk_results:
+                        local_i = idx_map[bin_idx]
+                        if result is not None:
+                            results[local_i] = result
+        finally:
+            self._cleanup_memmap()
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
     def _cleanup_shm(self):
         """Release all SharedMemory resources."""
         for shm in self._shm_handles:
@@ -386,3 +495,12 @@ class BatchExecutor:
             except Exception:
                 pass
         self._shm_handles.clear()
+
+    def _cleanup_memmap(self):
+        """Remove the temporary memmap directory."""
+        if self._memmap_dir and os.path.isdir(self._memmap_dir):
+            try:
+                shutil.rmtree(self._memmap_dir)
+            except Exception:
+                pass
+            self._memmap_dir = None

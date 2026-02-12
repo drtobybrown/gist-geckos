@@ -1172,6 +1172,7 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         executor = BatchExecutor(
             ncpu=config["GENERAL"]["NCPU"],
             wave_size=wave_size,
+            scratch_dir=config["GENERAL"]["OUTPUT"],
         )
         ppxf_tmp = executor.run(
             worker_fn=_gas_bin_worker,
