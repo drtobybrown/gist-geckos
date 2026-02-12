@@ -7,9 +7,10 @@ nodes (typically 16 CPUs) processing up to millions of spectra.
 
 Key optimizations over the existing joblib approach
 ---------------------------------------------------
-1. **Zero-copy shared memory** via fork COW (Linux/CANFAR) or
-   ``multiprocessing.shared_memory`` (macOS/spawn).  Eliminates the
-   joblib dump/load memmap overhead entirely on Linux.
+1. **In-memory shared arrays** via ``multiprocessing.shared_memory``
+   (POSIX shared memory backed by ``/dev/shm`` on Linux).  Eliminates
+   the joblib dump/load memmap-to-disk overhead entirely — data stays
+   in RAM at all times.
 2. **Dynamic load balancing** via ``imap_unordered`` with adaptive
    mini-chunks.  Avoids the straggler problem of static chunking where
    one slow chunk blocks overall progress.
@@ -19,6 +20,18 @@ Key optimizations over the existing joblib approach
    balance IPC overhead against scheduling flexibility.
 5. **Unified API** - one call replaces ~70 lines of duplicated
    boilerplate in each wrapper module.
+
+Start-method strategy
+---------------------
+We default to **spawn + SharedMemory** on all platforms.  This avoids
+deadlocks that arise when ``fork()`` is called after libraries like
+h5py, numpy BLAS, or Python's logging module have created internal
+threads/locks.  SharedMemory segments live in ``/dev/shm`` (RAM-backed
+tmpfs on Linux), so there is no disk I/O penalty.
+
+To opt into raw ``fork`` COW mode (faster pool startup, but risks
+deadlocks if any threads are active), set the environment variable
+``NGIST_USE_FORK=1``.
 
 Usage
 -----
@@ -77,10 +90,11 @@ def _init_worker_fork(shared_dict, worker_fn, params):
 
 
 def _init_worker_shm(shm_meta, worker_fn, params):
-    """Pool initializer for spawn mode (macOS).
+    """Pool initializer for spawn mode.
 
     Reconstructs numpy arrays from named ``SharedMemory`` segments
-    so every worker sees the same physical pages.
+    (backed by /dev/shm on Linux — pure RAM, no disk I/O) so every
+    worker sees the same physical pages.
     """
     global _worker_shared, _worker_fn, _worker_params
     _worker_fn = worker_fn
@@ -144,7 +158,20 @@ class BatchExecutor:
     # ------------------------------------------------------------------
     @staticmethod
     def _check_fork_available():
-        """Return True if fork-based multiprocessing is safe."""
+        """Return True only if the user explicitly opted into fork mode.
+
+        Raw ``fork()`` after threads have been created (by numpy BLAS,
+        h5py, Python logging, etc.) can deadlock.  We therefore default
+        to the safe ``spawn + SharedMemory`` path on **all** platforms.
+
+        SharedMemory segments live in ``/dev/shm`` on Linux (RAM-backed
+        tmpfs), so there is zero disk I/O penalty compared to fork COW.
+
+        Set ``NGIST_USE_FORK=1`` to force fork mode if you are certain
+        no thread-unsafe libraries have been loaded.
+        """
+        if os.environ.get("NGIST_USE_FORK", "0") != "1":
+            return False
         if sys.platform == "darwin":
             return False
         try:
@@ -291,7 +318,7 @@ class BatchExecutor:
         return results
 
     # ------------------------------------------------------------------
-    # Fork mode (Linux / CANFAR) — zero-copy via COW
+    # Fork mode — opt-in via NGIST_USE_FORK=1 (risk of deadlock)
     # ------------------------------------------------------------------
     def _run_fork(self, worker_fn, shared_arrays, params, chunks,
                   results, idx_map, desc):
@@ -314,7 +341,7 @@ class BatchExecutor:
                         results[local_i] = result
 
     # ------------------------------------------------------------------
-    # SharedMemory mode (macOS / spawn)
+    # SharedMemory mode (default on all platforms — safe, no disk I/O)
     # ------------------------------------------------------------------
     def _run_shm(self, worker_fn, shared_arrays, params, chunks,
                  results, idx_map, desc):
