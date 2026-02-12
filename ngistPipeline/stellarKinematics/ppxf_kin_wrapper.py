@@ -424,8 +424,65 @@ def _run_ppxf_adaptive(
     Coarse-to-fine template grid: run pPXF on a sparse grid, find best (age, metal, alpha),
     then re-run on a fine subgrid around it. Returns the same 8-tuple as run_ppxf (no weights).
     """
+    n_templates = templates_full.shape[1]
+    n_grid = nAges * nMetal * nAlpha
+    if n_templates < n_grid:
+        logging.warning(
+            "Adaptive grid: template count %d < grid size %d; skipping adaptive, using full set",
+            n_templates, n_grid,
+        )
+        templates_coarse = templates_full
+        out = run_ppxf(
+            templates_coarse,
+            log_bin_data,
+            log_bin_error,
+            velscale,
+            start,
+            bias,
+            goodPixels,
+            nmoments,
+            adeg,
+            mdeg,
+            reddening,
+            doclean,
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            i,
+            optimal_template_in,
+        )
+        return out[:8] + (None,)
+
     sa, sm, salpha = max(1, int(coarse_step[0])), max(1, int(coarse_step[1])), max(1, int(coarse_step[2]))
     coarse_idx = _build_coarse_idx(nAges, nMetal, nAlpha, sa, sm, salpha)
+    coarse_idx = coarse_idx[coarse_idx < n_templates]
+    if len(coarse_idx) == 0:
+        logging.warning("Adaptive grid: no coarse indices in range; using full templates")
+        templates_coarse = templates_full
+        out = run_ppxf(
+            templates_coarse,
+            log_bin_data,
+            log_bin_error,
+            velscale,
+            start,
+            bias,
+            goodPixels,
+            nmoments,
+            adeg,
+            mdeg,
+            reddening,
+            doclean,
+            logLam,
+            offset,
+            velscale_ratio,
+            nsims,
+            nbins,
+            i,
+            optimal_template_in,
+        )
+        return out[:8] + (None,)
     templates_coarse = templates_full[:, coarse_idx]
 
     out = run_ppxf(
@@ -474,6 +531,7 @@ def _run_ppxf_adaptive(
 
     ra, rm, ral = int(fine_radius[0]), int(fine_radius[1]), int(fine_radius[2])
     fine_idx = _build_fine_window_idx(nAges, nMetal, nAlpha, j0, k0, i0, ra, rm, ral)
+    fine_idx = fine_idx[fine_idx < n_templates]
 
     if len(fine_idx) <= len(coarse_idx):
         return out[:8] + (None,)
@@ -967,42 +1025,50 @@ def extractStellarKinematics(config):
     optimal_template_init = [0]
 
     if adaptive_grid_config is not None:
-        (
-            _,
-            _,
-            _,
-            optimal_template_out,
-            _,
-            _,
-            _,
-            _,
-        ) = _run_ppxf_adaptive(
-            templates,
-            adaptive_grid_config["nAges"],
-            adaptive_grid_config["nMetal"],
-            adaptive_grid_config["nAlpha"],
-            comb_spec,
-            comb_espec,
-            velscale,
-            start[0, :],
-            bias,
-            goodPixels_ppxf,
-            config["KIN"]["MOM"],
-            config["KIN"]["ADEG"],
-            config["KIN"]["MDEG"],
-            config["KIN"]["REDDENING"],
-            config["KIN"]["DOCLEAN"],
-            logLam,
-            offset,
-            velscale_ratio,
-            nsims,
-            nbins,
-            0,
-            optimal_template_init,
-            adaptive_grid_config["coarse_step"],
-            adaptive_grid_config["fine_radius"],
-        )
-    else:
+        try:
+            (
+                _,
+                _,
+                _,
+                optimal_template_out,
+                _,
+                _,
+                _,
+                _,
+            ) = _run_ppxf_adaptive(
+                templates,
+                adaptive_grid_config["nAges"],
+                adaptive_grid_config["nMetal"],
+                adaptive_grid_config["nAlpha"],
+                comb_spec,
+                comb_espec,
+                velscale,
+                start[0, :],
+                bias,
+                goodPixels_ppxf,
+                config["KIN"]["MOM"],
+                config["KIN"]["ADEG"],
+                config["KIN"]["MDEG"],
+                config["KIN"]["REDDENING"],
+                config["KIN"]["DOCLEAN"],
+                logLam,
+                offset,
+                velscale_ratio,
+                nsims,
+                nbins,
+                0,
+                optimal_template_init,
+                adaptive_grid_config["coarse_step"],
+                adaptive_grid_config["fine_radius"],
+            )
+        except Exception as e:
+            logging.warning(
+                "Adaptive grid combined-spectrum run failed (%s); falling back to full template set",
+                e,
+                exc_info=True,
+            )
+            optimal_template_out = None
+    if adaptive_grid_config is None or optimal_template_out is None:
         templates_comb = templates[:, reduced_idx] if reduced_idx is not None else templates
         (
             tmp_ppxf_result,

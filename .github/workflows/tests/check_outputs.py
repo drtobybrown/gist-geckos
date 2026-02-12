@@ -1,23 +1,33 @@
 import os
+import sys
 
 import numpy as np
 from astropy.io import fits
 
-# home_dir = os.path.expanduser('~')
+output_dir = os.path.join(
+    os.path.dirname(__file__), "gistTutorial", "results", "NGC0000Example"
+)
 
-# print(home_dir)
-output_dir = f"./.github/workflows/tests/gistTutorial/results/NGC0000Example"
+if not os.path.isdir(output_dir):
+    print(
+        f"Output directory not found: {output_dir}\n"
+        "The pipeline may have failed before writing output. Check the pipeline step.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
-with open(f"{output_dir}/LOGFILE") as f:
-	for line in f:
-		print(line)
-print('I got up to here!')
-#Check the output directory is created 
-with open(f"{output_dir}/LOGFILE") as f:
-	for line in f:
-		print(line)
-assert os.path.isdir(output_dir), "Output dir not created"
-#assert os.path.isdir(f"{output_dir}/maps"), "Maps dir not created"
+logfile = os.path.join(output_dir, "LOGFILE")
+if not os.path.isfile(logfile):
+    print(
+        f"LOGFILE not found: {logfile}\n"
+        "The pipeline may have failed before completing. Check the pipeline step.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+with open(logfile) as f:
+    for line in f:
+        print(line, end="")
 
 
 
@@ -47,10 +57,12 @@ output_files = ["CONFIG","LOGFILE",
 				"NGC0000Example_LS_ADAPTED_maps.fits"]
 
 for file in output_files:
-	assert os.path.isfile(f"{output_dir}/{file}"), f"{file} not created, probably the module failed"
-with open(f"{output_dir}/LOGFILE") as f:
-	for line in f:
-		print(line)
+    assert os.path.isfile(os.path.join(output_dir, file)), (
+        f"{file} not created, probably the module failed"
+    )
+with open(logfile) as f:
+    for line in f:
+        print(line, end="")
 
 # Check equivalent width (EW) functionality: gas FITS must contain EW columns
 # (EW uses stellar continuum from KIN module when _kin-bestfit.fits is available)
