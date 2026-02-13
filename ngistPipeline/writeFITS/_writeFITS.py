@@ -1,5 +1,6 @@
 import logging
 import os
+import traceback
 
 from printStatus import printStatus
 
@@ -39,12 +40,13 @@ def generateFITS(config, module):
             logging.info("Produced table binned maps in FITS format")
         except Exception as e:
             printStatus.updateFailed("Producing table binned maps in FITS format")
-            logging.error(
-                "Producing table binned maps failed: %s: %s",
-                type(e).__name__, str(e),
-            )
+            msg = "Producing table binned maps failed: %s: %s" % (type(e).__name__, str(e))
+            logging.error(msg)
+            print(msg, flush=True)
+            print("OUTPUT=%s table_path=%s exists=%s" % (outdir_sb, table_path_sb, os.path.isfile(table_path_sb)), flush=True)
             logging.error("OUTPUT=%s table_path=%s exists=%s", outdir_sb, table_path_sb, os.path.isfile(table_path_sb))
             logging.exception("Traceback for table binned maps failure")
+            traceback.print_exc()
 
     # - - - - - STELLAR KINEMATICS MODULE - - - - -
     if module == "KIN":
@@ -58,17 +60,19 @@ def generateFITS(config, module):
                 "FITS maps KIN: OUTPUT=%s RUN_ID=%s _kin.fits exists=%s _KIN_maps.fits exists=%s",
                 outdir_kin, run_id, os.path.isfile(kin_fits), os.path.isfile(maps_fits),
             )
+            print("FITS maps KIN: OUTPUT=%s RUN_ID=%s _kin.fits exists=%s _KIN_maps.fits exists=%s" % (outdir_kin, run_id, os.path.isfile(kin_fits), os.path.isfile(maps_fits)), flush=True)
             save_maps_fits.savefitsmaps("KIN", config["KIN"]["METHOD"], outdir_kin)
             printStatus.updateDone("Producing stellar kinematics maps in FITS format")
             logging.info("Produced stellar kinematics maps in FITS format")
         except Exception as e:
             printStatus.updateFailed("Producing stellar kinematics maps in FITS format")
-            logging.error(
-                "Producing stellar kinematics maps failed: %s: %s",
-                type(e).__name__, str(e),
-            )
+            msg = "Producing stellar kinematics maps failed: %s: %s" % (type(e).__name__, str(e))
+            logging.error(msg)
+            print(msg, flush=True)
+            print("OUTPUT=%s RUN_ID=%s kin_fits=%s exists=%s" % (outdir_kin, run_id, kin_fits, os.path.isfile(kin_fits)), flush=True)
             logging.error("OUTPUT=%s RUN_ID=%s kin_fits=%s exists=%s", outdir_kin, run_id, kin_fits, os.path.isfile(kin_fits))
             logging.exception("Traceback for stellar kinematics maps failure")
+            traceback.print_exc()
 
     # - - - - - CONTINUUM CUBE MODULE - - - - -
     if module == "CONT":
