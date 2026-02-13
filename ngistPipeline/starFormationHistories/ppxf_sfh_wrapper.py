@@ -381,17 +381,29 @@ def run_ppxf(
         )
 
     except Exception as e:
-        # Handle any other type of exception
-        print(f"An error occurred: {e}")
-    #     mc_results_nan = {
-    #             "w_row_MC_iter": np.nan,
-    #             "w_row_MC_mean": np.nan,
-    #             "w_row_MC_err": np.nan,
-    #             "mean_results_MC_iter": np.nan,
-    #             "mean_results_MC_mean":  np.nan,
-    #             "mean_results_MC_err":  np.nan
-    #         }
-    #     return( np.nan, np.nan, np.nan, np.nan, mc_results_nan, np.nan, np.nan, np.nan, np.nan)
+        # Return NaN-filled result for this bin so the pipeline can continue and mark the bin as failed
+        logging.warning("PPXF failed for bin index %s: %s", i, e)
+        print(f"An error occurred for bin {i}: {e}")
+        ntemplate = templates.shape[0]
+        mc_results_nan = {
+            "w_row_MC_iter": np.full((nsims, ncomb), np.nan),
+            "w_row_MC_mean": np.full(ncomb, np.nan),
+            "w_row_MC_err": np.full(ncomb, np.nan),
+            "mean_results_MC_iter": np.full((nsims, 3), np.nan),
+            "mean_results_MC_mean": np.full(3, np.nan),
+            "mean_results_MC_err": np.full(3, np.nan),
+        }
+        return (
+            np.full(nmoments, np.nan),
+            np.full(ncomb, np.nan),
+            np.full(npix, np.nan),
+            np.full(ntemplate, np.nan),
+            mc_results_nan,
+            np.full(nmoments, np.nan),
+            np.zeros(npix),  # spectral_mask
+            np.nan,
+            np.nan,
+        )
 
 
 
@@ -915,22 +927,41 @@ def extractStarFormationHistories(config):
         # Flatten the results
         ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
 
-        # Unpack results
+        # Unpack results (handle None from failed PPXF fits or worker issues)
+        n_mom = config['SFH']['MOM']
         for i in range(0, nbins):
-            ppxf_result[i,:config['SFH']['MOM']] = ppxf_tmp[i][0]
-            w_row[i,:] = ppxf_tmp[i][1]
-            ppxf_bestfit[i,:] = ppxf_tmp[i][2]
-            optimal_template[i,:] = ppxf_tmp[i][3]
-            w_row_MC_iter[i,:,:] = ppxf_tmp[i][4]["w_row_MC_iter"]
-            w_row_MC_mean[i,:] = ppxf_tmp[i][4]["w_row_MC_mean"]
-            w_row_MC_err[i,:] = ppxf_tmp[i][4]["w_row_MC_err"]
-            mean_results_MC_iter[i,:,:] = ppxf_tmp[i][4]["mean_results_MC_iter"]
-            mean_results_MC_mean[i,:]  = ppxf_tmp[i][4]["mean_results_MC_mean"]
-            mean_results_MC_err[i,:]  = ppxf_tmp[i][4]["mean_results_MC_err"]
-            formal_error[i,:config['SFH']['MOM']] = ppxf_tmp[i][5]
-            spectral_mask[i,:] = ppxf_tmp[i][6]
-            snr_postfit[i] = ppxf_tmp[i][7]
-            EBV[i] = ppxf_tmp[i][8]
+            r = ppxf_tmp[i]
+            if r is None:
+                logging.warning("Parallel worker returned None for bin %s; filling with NaN.", i)
+                ppxf_result[i, :n_mom] = np.nan
+                w_row[i, :] = np.nan
+                ppxf_bestfit[i, :] = np.nan
+                optimal_template[i, :] = np.nan
+                w_row_MC_iter[i, :, :] = np.nan
+                w_row_MC_mean[i, :] = np.nan
+                w_row_MC_err[i, :] = np.nan
+                mean_results_MC_iter[i, :, :] = np.nan
+                mean_results_MC_mean[i, :] = np.nan
+                mean_results_MC_err[i, :] = np.nan
+                formal_error[i, :n_mom] = np.nan
+                spectral_mask[i, :] = 0.0
+                snr_postfit[i] = np.nan
+                EBV[i] = np.nan
+                continue
+            ppxf_result[i, :n_mom] = r[0]
+            w_row[i, :] = r[1]
+            ppxf_bestfit[i, :] = r[2]
+            optimal_template[i, :] = r[3]
+            w_row_MC_iter[i, :, :] = r[4]["w_row_MC_iter"]
+            w_row_MC_mean[i, :] = r[4]["w_row_MC_mean"]
+            w_row_MC_err[i, :] = r[4]["w_row_MC_err"]
+            mean_results_MC_iter[i, :, :] = r[4]["mean_results_MC_iter"]
+            mean_results_MC_mean[i, :] = r[4]["mean_results_MC_mean"]
+            mean_results_MC_err[i, :] = r[4]["mean_results_MC_err"]
+            formal_error[i, :n_mom] = r[5]
+            spectral_mask[i, :] = r[6]
+            snr_postfit[i] = r[7]
+            EBV[i] = r[8]
 
         # Remove the memory-mapped files
         os.remove(templates_filename_memmap)
