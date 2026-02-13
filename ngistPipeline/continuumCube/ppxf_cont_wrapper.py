@@ -268,7 +268,8 @@ def run_ppxf(
             spectral_mask,
         )
 
-    except Exception:
+    except Exception as e:
+        logging.warning("PPXF failed for bin index %s: %s", i, e)
         return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
 
 
@@ -547,14 +548,27 @@ def createContinuumCube(config):
         # Flatten the results
         ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
 
+        # Unpack results (handle None from failed PPXF fits or worker issues)
+        n_mom = config["CONT"]["MOM"]
         for i in range(0, nbins):
-            ppxf_result[i, : config["CONT"]["MOM"]] = ppxf_tmp[i][0]
-            ppxf_reddening[i] = ppxf_tmp[i][1]
-            ppxf_bestfit[i, :] = ppxf_tmp[i][2]
-            optimal_template[i, :] = ppxf_tmp[i][3]
-            mc_results[i, : config["CONT"]["MOM"]] = ppxf_tmp[i][4]
-            formal_error[i, : config["CONT"]["MOM"]] = ppxf_tmp[i][5]
-            spectral_mask[i, :] = ppxf_tmp[i][6]
+            r = ppxf_tmp[i]
+            if r is None:
+                logging.warning("Parallel worker returned None for bin %s; filling with NaN.", i)
+                ppxf_result[i, :n_mom] = np.nan
+                ppxf_reddening[i] = np.nan
+                ppxf_bestfit[i, :] = np.nan
+                optimal_template[i, :] = np.nan
+                mc_results[i, :n_mom] = np.nan
+                formal_error[i, :n_mom] = np.nan
+                spectral_mask[i, :] = 0.0
+                continue
+            ppxf_result[i, :n_mom] = r[0]
+            ppxf_reddening[i] = r[1]
+            ppxf_bestfit[i, :] = r[2]
+            optimal_template[i, :] = r[3]
+            mc_results[i, :n_mom] = r[4]
+            formal_error[i, :n_mom] = r[5]
+            spectral_mask[i, :] = r[6]
 
         printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
         # Remove the memory-mapped files (only created in parallel mode)

@@ -304,10 +304,7 @@ def run_ppxf(
         )
 
     except Exception as e:
-        if i == 0:
-            logging.warning(
-                "PPXF failed on combined spectrum (or first bin): %s", e, exc_info=True
-            )
+        logging.warning("PPXF failed for bin index %s: %s", i, e, exc_info=(i == 0))
         return (np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan)
 
 
@@ -795,17 +792,30 @@ def extractStellarKinematics(config):
         # Flatten the results
         ppxf_tmp = [result for chunk_results in ppxf_tmp for result in chunk_results]
 
-        # Unpack results
+        # Unpack results (handle None from failed PPXF fits or worker issues)
+        n_mom = config["KIN"]["MOM"]
         for i in range(0, nbins):
-            ppxf_result[i, : config["KIN"]["MOM"]] = ppxf_tmp[i][0]
-            ppxf_reddening[i] = ppxf_tmp[i][1]
-            ppxf_bestfit[i, :] = ppxf_tmp[i][2]
-            optimal_template[i, :] = ppxf_tmp[i][3]
-            mc_results[i, : config["KIN"]["MOM"]] = ppxf_tmp[i][4]
-            formal_error[i, : config["KIN"]["MOM"]] = ppxf_tmp[i][5]
-            spectral_mask[i, :] = ppxf_tmp[i][6]
-            snr_postfit[i] = ppxf_tmp[i][7]
-        
+            r = ppxf_tmp[i]
+            if r is None:
+                logging.warning("Parallel worker returned None for bin %s; filling with NaN.", i)
+                ppxf_result[i, :n_mom] = np.nan
+                ppxf_reddening[i] = np.nan
+                ppxf_bestfit[i, :] = np.nan
+                optimal_template[i, :] = np.nan
+                mc_results[i, :n_mom] = np.nan
+                formal_error[i, :n_mom] = np.nan
+                spectral_mask[i, :] = 0.0
+                snr_postfit[i] = np.nan
+                continue
+            ppxf_result[i, :n_mom] = r[0]
+            ppxf_reddening[i] = r[1]
+            ppxf_bestfit[i, :] = r[2]
+            optimal_template[i, :] = r[3]
+            mc_results[i, :n_mom] = r[4]
+            formal_error[i, :n_mom] = r[5]
+            spectral_mask[i, :] = r[6]
+            snr_postfit[i] = r[7]
+
         printStatus.updateDone("Running PPXF in parallel mode", progressbar=False)
 
         # Remove the memory-mapped files
