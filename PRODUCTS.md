@@ -79,9 +79,11 @@ Binned and (optionally) full spaxel spectra are stored in **HDF5** for efficienc
 
 Emission-line products are **per bin** (and optionally **per spaxel** when GAS is run at SPAXEL level). Each fitted line has columns for flux, flux error, velocity, velocity error, sigma, sigma error, equivalent width, EW error, and continuum at line centre.
 
+**Flux vs. equivalent width (BIN level):** For Voronoi-binned runs, `{LINE}_FLUX` and `{LINE}_FLUX_ERR` are **per spaxel** (the fitted line flux integrated for the coadded bin spectrum, divided by the number of spaxels in that bin, consistent with `NSPAX` in `_table.fits`). `{LINE}_EW`, `{LINE}_EW_ERR`, and `{LINE}_CONT` use the **coadded bin spectrum** scale—the same scale as the GAS/KIN best-fit continuum—so EW is **not** per-spaxel averaged in that sense.
+
 | Product | Format | Structure | Description |
 |---------|--------|-----------|-------------|
-| `{RUN_ID}_gas_BIN.fits` | FITS | Binary table: **one row per bin**. Columns: `BIN_ID`; stellar kinematics (e.g. `V_STARS2`, `SIGMA_STARS2`); per line: `{LINE}_FLUX`, `{LINE}_FLUX_ERR`, `{LINE}_VEL`, `{LINE}_VEL_ERR`, `{LINE}_SIGMA`, `{LINE}_SIGMA_ERR`, `{LINE}_EW`, `{LINE}_EW_ERR`, `{LINE}_CONT`; optional BPT columns. Flux in physical units (e.g. erg/s/cm²); velocities in km/s; EW in Å. | Integrated line fluxes, kinematics, and equivalent widths per bin. **EW sign:** positive = emission, negative = absorption. |
+| `{RUN_ID}_gas_BIN.fits` | FITS | Binary table: **one row per bin**. Columns: `BIN_ID`; stellar kinematics (e.g. `V_STARS2`, `SIGMA_STARS2`); per line: `{LINE}_FLUX`, `{LINE}_FLUX_ERR`, `{LINE}_VEL`, `{LINE}_VEL_ERR`, `{LINE}_SIGMA`, `{LINE}_SIGMA_ERR`, `{LINE}_EW`, `{LINE}_EW_ERR`, `{LINE}_CONT`; optional BPT columns. Flux in physical units **per spaxel** (e.g. erg/s/cm²); velocities in km/s; EW in Å (bin-coadd scale; see note above). | Line flux (per spaxel), kinematics, and equivalent widths per bin. **EW sign:** positive = emission, negative = absorption. |
 | `{RUN_ID}_gas_SPAXEL.fits` | FITS | Same column layout; **one row per spaxel**. | Same quantities at spaxel resolution (when GAS runs at SPAXEL). |
 | `{RUN_ID}_gas-bestfit_{LEVEL}.fits` | FITS | Tables: total best-fit spectrum; gas-only best-fit; `LOGLAM`; good-pixels. | Best-fit spectra (total and gas-only) per bin or per spaxel. |
 | `{RUN_ID}_gas-cleaned_{LEVEL}.fits` | FITS | Cleaned (emission-subtracted) spectra. | Spectra after subtracting fitted emission lines. |

@@ -1,6 +1,6 @@
 """
 Tests for equivalent width (EW) and KIN stellar continuum functionality
-in the emission-line modules (ppxf and GandALF gas wrappers).
+in the pPXF emission-line module (ppxf_gas_wrapper).
 """
 import os
 import tempfile

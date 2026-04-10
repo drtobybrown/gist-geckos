@@ -47,9 +47,7 @@ van de Sande et al. 2017 (https://ui.adsabs.harvard.edu/abs/2017ApJ...835..104V)
 
 - If you use the 'ppxf' routine of the CONT module, please cite the above pPXF references.
 
-- If you use the 'ppxf' routine of the GAS module, please cite the above pPXF references.
-If you use the 'gandalf' routine of the GAS module, please cite Sarzi et al. 2006 (https://ui.adsabs.harvard.edu/abs/2006MNRAS.366.1151S) (ASCL: https://ascl.net/1708.012)
-If you use the 'magpi_gandalf' routine of the GAS module, please cite Battisti et al., (in prep).
+- If you use the 'ppxf' routine of the GAS module, please cite the above pPXF references. The supported emission-line implementation in the current beta branch uses pPXF for GAS.
 
 - If you use the 'ppxf' routine of the SFH module, please cite the same references as for the KIN module (if not cited already).
 
