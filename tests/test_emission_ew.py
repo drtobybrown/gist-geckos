@@ -15,6 +15,47 @@ from ngistPipeline.emissionLines.ppxf_gas_wrapper import (
 )
 
 
+def test_equivalent_width_scales_linearly_with_flux():
+    """EW halves when line flux halves if continuum is unchanged (flux/continuum scale must match)."""
+    npix = 100
+    nbins = 2
+    nlines = 1
+    logLam = np.linspace(np.log(4000), np.log(7000), npix)
+    line_wavelengths = np.array([5006.77])
+    wave = np.exp(logLam)
+    stellar_cont = np.ones((nbins, npix)) * 0.5
+    gas_bestfit = np.zeros((nbins, npix))
+    idx = np.argmin(np.abs(wave - line_wavelengths[0]))
+    gas_bestfit[:, idx] = 0.1
+    bestfit = stellar_cont + gas_bestfit
+    gas_flux_full = np.array([[1.0], [0.8]])
+    gas_flux_half = gas_flux_full * 0.5
+    gas_err = gas_flux_full * 0.05
+    velscale = 50.0
+
+    ew_full, _, _ = compute_equivalent_width(
+        gas_flux_full,
+        gas_err,
+        bestfit,
+        gas_bestfit,
+        logLam,
+        line_wavelengths,
+        velscale,
+        stellar_continuum=None,
+    )
+    ew_half, _, _ = compute_equivalent_width(
+        gas_flux_half,
+        gas_err * 0.5,
+        bestfit,
+        gas_bestfit,
+        logLam,
+        line_wavelengths,
+        velscale,
+        stellar_continuum=None,
+    )
+    assert np.allclose(ew_half, 0.5 * ew_full, rtol=1e-10, atol=1e-10)
+
+
 def test_compute_equivalent_width_without_kin_continuum():
     """EW from gas-fit continuum (bestfit - gas_bestfit) gives positive EW for emission."""
     npix = 100
