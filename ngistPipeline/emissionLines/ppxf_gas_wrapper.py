@@ -356,9 +356,12 @@ def compute_equivalent_width(
     Parameters
     ----------
     gas_flux_in_units : ndarray (nbins, nlines)
-        Integrated line flux in physical units (e.g., erg/s/cm^2)
+        Integrated line flux in physical units (e.g., erg/s/cm^2), on the same
+        flux scale as ``bestfit`` / ``stellar_continuum`` (e.g. bin coadd for
+        Voronoi BIN runs), not per-spaxel averaged unless that is how the
+        spectrum was scaled before the fit.
     gas_err_flux_in_units : ndarray (nbins, nlines)
-        Line flux uncertainties
+        Line flux uncertainties (same scale as gas_flux_in_units)
     bestfit : ndarray (nbins, npix)
         Total best-fit spectrum (stellar + gas)
     gas_bestfit : ndarray (nbins, npix)
@@ -1285,10 +1288,6 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         * linesfitted["lambda"]
         * (1 + config["GENERAL"]["REDSHIFT"] / C)
     )
-    # divide by the number of spaxels per bin to make the flux per spaxel
-    for i in range(gas_flux_in_units.shape[0]):
-        gas_flux_in_units[i, :] = gas_flux_in_units[i, :] / n_spaxels_per_bin[i]
-        gas_err_flux_in_units[i, :] = gas_err_flux_in_units[i, :] / n_spaxels_per_bin[i]
 
     # add back the template LSF
     eml_fwhm_angstr = LSF_Templates(linesfitted["lambda"])
@@ -1297,7 +1296,9 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
     # templates_sigma = np.zeros(sigma_final.shape)+templates_sigma
     sigma_final_measured = (sigma_final**2 + templates_sigma**2) ** (0.5)
 
-    # Compute equivalent widths for all emission lines (use KIN stellar continuum when available)
+    # EW must use line flux on the same scale as the fitted spectrum and
+    # continuum (Voronoi bin coadd). Per-spaxel flux normalization is applied
+    # only after EW (see loop below).
     printStatus.running("Computing equivalent widths")
     stellar_continuum_kin = _load_kin_stellar_continuum(
         config, logLam_galaxy, nbins, currentLevel
@@ -1313,6 +1314,12 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         stellar_continuum=stellar_continuum_kin,
     )
     printStatus.updateDone("Computing equivalent widths")
+
+    # {LINE}_FLUX / {LINE}_FLUX_ERR: per spaxel (bin-integrated flux / N_spax).
+    # {LINE}_EW / _EW_ERR / _CONT: bin coadd scale (consistent with KIN / gas bestfit).
+    for i in range(gas_flux_in_units.shape[0]):
+        gas_flux_in_units[i, :] = gas_flux_in_units[i, :] / n_spaxels_per_bin[i]
+        gas_err_flux_in_units[i, :] = gas_err_flux_in_units[i, :] / n_spaxels_per_bin[i]
 
     # save results to file
     if config["GAS"]["LEVEL"] != "BOTH":

@@ -6,6 +6,15 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
+V7.4.2       2026-04-10 FIXED: GAS equivalent width (pPXF) on Voronoi BIN runs used line flux
+			 after per-spaxel normalization while continuum matched the coadded bin
+			 spectrum, underestimating EW by the number of spaxels per bin. EW is now
+			 computed from bin-integrated flux before dividing {LINE}_FLUX by N_spax;
+			 SPAXEL runs unchanged (N_spax = 1). Removed stale in-repo reports
+			 (REASSESSMENT, CODE_REVIEW_REPORT, CODE_OPTIMIZATION_REPORT,
+			 MEMORY_MANAGEMENT_PLAN); README, ARCHITECTURE, and PRODUCTS updated for
+			 supported pPXF GAS path and FLUX vs EW semantics.
+
 V7.4.1       2026-01-29 CHANGED: Equivalent Width (EW) sign convention so emission is positive.
 			 EW is now computed as: EW = F_line / f_cont(λ_line)
 			 Convention: Positive EW for emission lines (flux above continuum),

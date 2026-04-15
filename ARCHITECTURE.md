@@ -118,7 +118,7 @@ Each pipeline stage is implemented as a **dispatcher** that:
 | prepareSpectra | PREPARE_SPECTRA | e.g. `default` → `prepareSpectra/default.py` | `prepSpectra(config, cube)` |
 | stellarKinematics | KIN | e.g. `ppxf` → `stellarKinematics/ppxf_kin_wrapper.py` | `extractStellarKinematics(config)`; then writeFITS KIN |
 | continuumCube | CONT | e.g. `ppxf` → `continuumCube/ppxf_cont_wrapper.py` | `createContinuumCube(config)`; then writeFITS CONT |
-| emissionLines | GAS | e.g. `ppxf`, `gandalf`, `magpi_gandalf` → `emissionLines/<method>_gas_wrapper.py` | Emission routine; then writeFITS GAS |
+| emissionLines | GAS | **`ppxf`** → `emissionLines/ppxf_gas_wrapper.py` (supported). Legacy `gandalf` / `magpi_gandalf` wrappers remain in-tree but are unmaintained. | Emission routine; then writeFITS GAS |
 | starFormationHistories | SFH | e.g. `ppxf` → `starFormationHistories/ppxf_sfh_wrapper.py` | `extractStarFormationHistories(config)`; then writeFITS SFH |
 | lineStrengths | LS | e.g. `default` → `lineStrengths/default.py` | `measureLineStrengths(config)`; then writeFITS LS |
 | userModules | UMOD | e.g. `twocomp_ppxf` → `userModules/twocomp_ppxf.py` | User-defined; then writeFITS UMOD |
@@ -263,7 +263,7 @@ ngistPipeline --config /path/to/config.yaml --default-dir /path/to/defaultDir
 | `ngistPipeline/prepareTemplates/` | Called by analysis plugins; miles, walcher, bpass, etc. |
 | `ngistPipeline/stellarKinematics/` | Dispatcher + ppxf_kin_wrapper. |
 | `ngistPipeline/continuumCube/` | Dispatcher + ppxf_cont_wrapper. |
-| `ngistPipeline/emissionLines/` | Dispatcher + ppxf_gas_wrapper, gandalf_gas_wrapper, MAGPI_gandalf_gas_wrapper. |
+| `ngistPipeline/emissionLines/` | Dispatcher + **ppxf_gas_wrapper** (supported); legacy gandalf / MAGPI_gandalf wrappers (unmaintained). |
 | `ngistPipeline/starFormationHistories/` | Dispatcher + ppxf_sfh_wrapper. |
 | `ngistPipeline/lineStrengths/` | Dispatcher + default, lsindex_spec, ssppop_fitting. |
 | `ngistPipeline/userModules/` | Dispatcher + user plugins (e.g. twocomp_ppxf). |
