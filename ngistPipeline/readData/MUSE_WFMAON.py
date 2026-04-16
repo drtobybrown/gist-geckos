@@ -7,6 +7,7 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from printStatus import printStatus
 
+from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.readData import der_snr as der_snr
 
 
@@ -131,6 +132,10 @@ def readCube(config):
         + str(config["READ_DATA"]["LMAX_TOT"])
         + "A."
     )
+
+    wd = _auxiliary.workspace_dtype(config)
+    spec = np.asarray(spec, dtype=wd)
+    espec = np.asarray(espec, dtype=wd)
 
     # Computing the SNR per spaxel
     idx_snr = np.where(

@@ -805,13 +805,14 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
 
     emi_mpol_deg = config["GAS"]["MDEG"]  # Should be ~8
     ## --------------------- ##
+    wd = _auxiliary.workspace_dtype(config)
     # Read data if we run on BIN level
     if currentLevel == "BIN":
         # Open the HDF5 file
         with h5py.File(os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + "_BinSpectra.hdf5", 'r') as f:
             # Read the data from the file
-            spectra = f['SPEC'][:]
-            error = f['ESPEC'][:]
+            spectra = np.asarray(f['SPEC'][:], dtype=wd)
+            error = np.asarray(f['ESPEC'][:], dtype=wd)
             logLam_galaxy = f['LOGLAM'][:]
             velscale = f.attrs['VELSCALE']
 
@@ -878,8 +879,8 @@ def performEmissionLineAnalysis(config):  # This is your main emission line fitt
         # Open the HDF5 file
         with h5py.File(os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"]) + "_AllSpectra.hdf5", 'r') as f:
             # Read the data from the file
-            spectra = f['SPEC'][:]
-            error = f['ESPEC'][:]
+            spectra = np.asarray(f['SPEC'][:], dtype=wd)
+            error = np.asarray(f['ESPEC'][:], dtype=wd)
             logLam_galaxy = f['LOGLAM'][:]
             velscale = f.attrs['VELSCALE']
 

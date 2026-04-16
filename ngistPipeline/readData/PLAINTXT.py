@@ -5,6 +5,7 @@ import numpy as np
 from astropy.io import fits
 from printStatus import printStatus
 
+from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.readData import der_snr as der_snr
 
 
@@ -48,6 +49,9 @@ def readCube(config):
     spec = spec[idx]
     espec = espec[idx]
     wave = wave[idx]
+    wd = _auxiliary.workspace_dtype(config)
+    spec = np.asarray(spec, dtype=wd)
+    espec = np.asarray(espec, dtype=wd)
     logging.info(
         "Shortening spectra to the wavelength range from "
         + str(config["READ_DATA"]["LMIN_TOT"])

@@ -571,8 +571,9 @@ def extractStellarKinematics(config):
         )
         )[0]
 
-        bin_data = f['SPEC'][:][idx_lam, :]
-        bin_err = f['ESPEC'][:][idx_lam, :]
+        wd = _auxiliary.workspace_dtype(config)
+        bin_data = np.asarray(f['SPEC'][:][idx_lam, :], dtype=wd)
+        bin_err = np.asarray(f['ESPEC'][:][idx_lam, :], dtype=wd)
         velscale = f.attrs['VELSCALE']
     
     logLam = logLam[idx_lam]

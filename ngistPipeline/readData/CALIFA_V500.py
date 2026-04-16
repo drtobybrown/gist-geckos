@@ -5,6 +5,8 @@ import numpy as np
 from astropy.io import fits
 from printStatus import printStatus
 
+from ngistPipeline.auxiliary import _auxiliary
+
 
 # ======================================
 # Routine to set DEBUG mode
@@ -97,6 +99,10 @@ def readCube(config):
 
     # Pass error spectra as variances instead of stddev
     espec = espec**2
+
+    wd = _auxiliary.workspace_dtype(config)
+    spec = np.asarray(spec, dtype=wd)
+    espec = np.asarray(espec, dtype=wd)
 
     # Computing the SNR per spaxel
     idx_snr = np.where(

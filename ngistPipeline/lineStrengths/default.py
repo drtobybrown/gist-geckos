@@ -349,6 +349,7 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
         )
         == False) or (config["GENERAL"]["OW_OUTPUT"] == True):
         # Read spectra
+        wd = _auxiliary.workspace_dtype(config)
         if (
             os.path.isfile(
                 os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
@@ -366,7 +367,7 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
                 os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
                 + "_gas-cleaned_BIN.fits"
             )
-            binned_spec_data = hdu_spec[1].data["SPEC"]
+            binned_spec_data = np.asarray(hdu_spec[1].data["SPEC"], dtype=wd)
             binned_loglam_data = hdu_spec[2].data["LOGLAM"]
         else:
             logging.info(
@@ -380,7 +381,7 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
                 + "_BinSpectra.hdf5",
                 "r",
             ) as f:
-                binned_spec_data = f["SPEC"][:].T
+                binned_spec_data = np.asarray(f["SPEC"][:].T, dtype=wd)
                 binned_loglam_data = f["LOGLAM"][:]
         
         
@@ -389,7 +390,7 @@ def measureLineStrengths(config, RESOLUTION="ORIGINAL"):
                 + "_BinSpectra.hdf5",
                 "r",
             ) as errorf:
-                binned_espec_data = errorf["ESPEC"][:].T
+                binned_espec_data = np.asarray(errorf["ESPEC"][:].T, dtype=wd)
                 binned_eloglam_data = errorf["LOGLAM"][:].T
                 
         idx_lamMin = np.where(binned_loglam_data[0] == binned_eloglam_data)[0]

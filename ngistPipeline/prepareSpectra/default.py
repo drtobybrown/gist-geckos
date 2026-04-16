@@ -7,6 +7,8 @@ from astropy.io import fits
 from ppxf.ppxf_util import log_rebin
 from printStatus import printStatus
 
+from ngistPipeline.auxiliary import _auxiliary
+
 
 def get_input_bunit(config):
     """
@@ -191,6 +193,10 @@ def saveAllSpectra(config, log_spec, log_error, velscale, logLam, bunit=None):
     if bunit is None:
         bunit = get_input_bunit(config)
 
+    wd = _auxiliary.workspace_dtype(config)
+    log_spec = np.asarray(log_spec, dtype=wd)
+    log_error = np.asarray(log_error, dtype=wd)
+
     outfn_spectra = (
         os.path.join(config["GENERAL"]["OUTPUT"], config["GENERAL"]["RUN_ID"])
         + "_AllSpectra.hdf5"
@@ -200,8 +206,8 @@ def saveAllSpectra(config, log_spec, log_error, velscale, logLam, bunit=None):
     # Create a new HDF5 file
     with h5py.File(outfn_spectra, 'w') as f:
         # Create datasets for the spectra and error spectra
-        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=log_spec.dtype)
-        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=log_error.dtype)
+        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=wd)
+        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=wd)
 
         # Write the data in chunks
         chunk_size = 1000  # Adjust this value to fit your memory capacity
@@ -246,11 +252,15 @@ def saveBinSpectra(config, log_spec, log_error, velscale, logLam, flag, bunit=No
             "Writing: " + config["GENERAL"]["RUN_ID"] + "_BinSpectra_linear.hdf5"
         )
 
+    wd = _auxiliary.workspace_dtype(config)
+    log_spec = np.asarray(log_spec, dtype=wd)
+    log_error = np.asarray(log_error, dtype=wd)
+
     # Create a new HDF5 file
     with h5py.File(outfn_spectra, 'w') as f:
         # Create datasets for the spectra and error spectra
-        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=log_spec.dtype)
-        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=log_error.dtype)
+        spec_dset = f.create_dataset('SPEC', shape=log_spec.shape, dtype=wd)
+        espec_dset = f.create_dataset('ESPEC', shape=log_error.shape, dtype=wd)
 
         # Write the data in chunks
         chunk_size = 1000  # Adjust this value to fit your memory capacity

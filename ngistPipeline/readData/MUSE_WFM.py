@@ -5,6 +5,7 @@ import extinction
 import numpy as np
 from astropy.io import fits
 from astropy.wcs import WCS
+from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.readData import der_snr as der_snr
 from printStatus import printStatus
 
@@ -76,15 +77,16 @@ def readCube(config):
 
     # Read only the wavelength slice to avoid holding full cube in memory
     with fits.open(config["GENERAL"]["INPUT"], memmap=True, lazy_load_hdus=True) as hdu:
+        wd = _auxiliary.workspace_dtype(config)
         data = hdu[ihdu].data
-        data_slice = np.asarray(data[idx, :, :], dtype=np.float64)
+        data_slice = np.asarray(data[idx, :, :], dtype=wd)
         spec = np.reshape(data_slice, [len(idx), s[1] * s[2]])
 
         # Read the variance spectra if available. Otherwise estimate with der_snr
         if len(hdu) >= 3:
             logging.info("Reading the error (variance) spectra from the cube")
             stat = hdu[2].data
-            stat_slice = np.asarray(stat[idx, :, :], dtype=np.float64)
+            stat_slice = np.asarray(stat[idx, :, :], dtype=wd)
             espec = np.reshape(stat_slice, [len(idx), s[1] * s[2]])
         else:
             logging.info(

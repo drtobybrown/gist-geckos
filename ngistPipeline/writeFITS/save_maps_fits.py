@@ -12,9 +12,9 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from scipy.interpolate import CubicSpline
 from astropy import units as u
-from astropy.wcs import WCS
 from printStatus import printStatus
 
+from ngistPipeline.auxiliary import _auxiliary
 from ngistPipeline.utils.wcs_utils import (diagonal_wcs_to_cdelt,
                                           strip_wcs_from_header)
 
@@ -41,8 +41,9 @@ def _load_input_spectra_trimmed(config):
         lmax = config["READ_DATA"]["LMAX_TOT"]
         idx = np.where(np.logical_and(wave_full >= lmin, wave_full <= lmax))[0]
 
+        wd = _auxiliary.workspace_dtype(config)
         data = hdu[ihdu].data
-        data_slice = np.asarray(data[idx, :, :], dtype=np.float64)
+        data_slice = np.asarray(data[idx, :, :], dtype=wd)
         spec = np.reshape(data_slice, [len(idx), s[1] * s[2]])
 
     wave = wave_full[idx]
@@ -485,6 +486,9 @@ def saveContLineCube(config):
     NX = cubehdr["NAXIS1"]
     NY = cubehdr["NAXIS2"]
 
+    wd = _auxiliary.workspace_dtype(config)
+    cube_store_dt = np.float32 if wd == np.dtype(np.float32) else np.float64
+
     # Load only wavelength-trimmed spectra (avoids full readCube and reduces peak RAM)
     spectra_all, linLam_full = _load_input_spectra_trimmed(config)
     idx_lam = np.where(
@@ -602,7 +606,7 @@ def saveContLineCube(config):
     )
     cubehdul = [
         fits.PrimaryHDU(
-            data=np.float32(contCube.reshape((len(linLam), NY, NX))),
+            data=cube_store_dt(contCube.reshape((len(linLam), NY, NX))),
             header=cubehdr,
         )
     ]
@@ -621,7 +625,7 @@ def saveContLineCube(config):
     )
     cubehdul = [
         fits.PrimaryHDU(
-            data=np.float32(lineCube.reshape((len(linLam), NY, NX))),
+            data=cube_store_dt(lineCube.reshape((len(linLam), NY, NX))),
             header=cubehdr,
         )
     ]
@@ -637,7 +641,7 @@ def saveContLineCube(config):
     )
     cubehdul = [
         fits.PrimaryHDU(
-            data=np.float32(origCube.reshape((len(linLam), NY, NX))),
+            data=cube_store_dt(origCube.reshape((len(linLam), NY, NX))),
             header=cubehdr,
         )
     ]

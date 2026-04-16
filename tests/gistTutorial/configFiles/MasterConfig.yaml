@@ -9,6 +9,8 @@ GENERAL :
   LSF_DATA : 'lsf_MUSE-WFM' # Path of the file specifying the line-spread-function of the observational data. The specified path is relative to the configDir path in defaultDir.
   OW_CONFIG : TRUE #  Ignore configurations from previous runs which are saved in the CONFIG file in the output directory [True/False]
   OW_OUTPUT : TRUEs # Overwrite any output files already present in the current output directory [True/False]
+  # Optional: USE_FLOAT32 : false          # float32 for large spectral arrays / selected cubes (default false = float64).
+  # Optional: ARRAY_DTYPE : "float64"      # Alternative to USE_FLOAT32: "float32" or "float64".
 
 # Read data module
 READ_DATA :

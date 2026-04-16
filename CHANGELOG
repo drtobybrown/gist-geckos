@@ -6,6 +6,12 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
+V7.4.3       2026-04-10 ADDED: ``GENERAL["USE_FLOAT32"]`` and ``GENERAL["ARRAY_DTYPE"]`` (with
+			 ``workspace_dtype`` in ``auxiliary/_auxiliary.py``) to store large spectral
+			 arrays in float32 where supported; default remains float64. Environment
+			 ``NGIST_USE_FLOAT64=1`` forces float64. SFH and other sensitive fits should be
+			 validated when enabling float32.
+
 V7.4.2       2026-04-10 FIXED: GAS equivalent width (pPXF) on Voronoi BIN runs used line flux
 			 after per-spaxel normalization while continuum matched the coadded bin
 			 spectrum, underestimating EW by the number of spaxels per bin. EW is now

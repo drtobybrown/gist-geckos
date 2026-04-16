@@ -41,9 +41,9 @@ Binned and (optionally) full spaxel spectra are stored in **HDF5** for efficienc
 
 | Product | Format | Structure | Description |
 |---------|--------|-----------|-------------|
-| `{RUN_ID}_BinSpectra.hdf5`     | HDF5 | Datasets: `SPEC` `(n_wave, n_bins)`, `ESPEC` `(n_wave, n_bins)`; `LOGLAM` `(n_wave,)`. Attributes: `VELSCALE` (km/s per pixel), `CRPIX1`, `CRVAL1`, `CDELT1` (log λ); optional `BUNIT` (flux unit from input). | Log-rebinned spectra **per Voronoi bin** (flux and variance). Same physical units as input. |
+| `{RUN_ID}_BinSpectra.hdf5`     | HDF5 | Datasets: `SPEC` `(n_wave, n_bins)`, `ESPEC` `(n_wave, n_bins)`; `LOGLAM` `(n_wave,)`. Attributes: `VELSCALE` (km/s per pixel), `CRPIX1`, `CRVAL1`, `CDELT1` (log λ); optional `BUNIT` (flux unit from input). Dataset dtype is float64 by default, or float32 when `GENERAL["USE_FLOAT32"]` / `GENERAL["ARRAY_DTYPE"]` requests reduced precision. | Log-rebinned spectra **per Voronoi bin** (flux and variance). Same physical units as input. |
 | `{RUN_ID}_BinSpectra_linear.hdf5` | HDF5 | Same layout as above; wavelength sampling is **linear** (before log-rebin). | Linear-wavelength binned spectra (intermediate product). |
-| `{RUN_ID}_AllSpectra.hdf5`    | HDF5 | Datasets: `SPEC` `(n_wave, n_spaxels)`, `ESPEC` `(n_wave, n_spaxels)`; `LOGLAM` `(n_wave,)`. Same attributes as above. | Log-rebinned spectra **per spaxel** (only written when GAS is run at SPAXEL level). |
+| `{RUN_ID}_AllSpectra.hdf5`    | HDF5 | Datasets: `SPEC` `(n_wave, n_spaxels)`, `ESPEC` `(n_wave, n_spaxels)`; `LOGLAM` `(n_wave,)`. Same attributes as above; dtype follows the same float32/float64 policy as `BinSpectra`. | Log-rebinned spectra **per spaxel** (only written when GAS is run at SPAXEL level). |
 
 **Reproducibility:** Same `VELSCALE` and wavelength range yield the same log λ grid and bin-wise co-addition. Flux units are preserved from the input (BUNIT propagated when present).
 
@@ -67,7 +67,7 @@ Binned and (optionally) full spaxel spectra are stored in **HDF5** for efficienc
 | Product | Format | Structure | Description |
 |---------|--------|-----------|-------------|
 | `{RUN_ID}_kin-bestfit-cont.fits` | FITS | Primary; table `BESTFIT` `(n_bins, n_pix)`; `LOGLAM`. | Continuum-only best-fit spectrum per bin (log λ). Used to build continuum/line cubes. |
-| `{RUN_ID}_CONTcube.fits` | FITS | 3D image `(n_wave, NY, NX)`: continuum flux at **spaxel** resolution (linear λ). Header: WCS, `NAXIS3` = wavelength; optional `BUNIT`, `CUNIT3`. | Continuum-only cube (one value per spaxel per wavelength). Same flux units as input. |
+| `{RUN_ID}_CONTcube.fits` | FITS | 3D image `(n_wave, NY, NX)`: continuum flux at **spaxel** resolution (linear λ). Header: WCS, `NAXIS3` = wavelength; optional `BUNIT`, `CUNIT3`. Image BITPIX follows workspace dtype (float32 when `USE_FLOAT32` is enabled, else float64). | Continuum-only cube (one value per spaxel per wavelength). Same flux units as input. |
 | `{RUN_ID}_LINEcube.fits` | FITS | Same 3D layout. | Emission-only cube (observed − continuum). Same units as input. |
 | `{RUN_ID}_ORIGcube.fits` | FITS | Same 3D layout. | Original (observed) cube at same sampling. Same units as input. |
 

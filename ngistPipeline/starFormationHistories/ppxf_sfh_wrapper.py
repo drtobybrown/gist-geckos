@@ -737,8 +737,13 @@ def extractStarFormationHistories(config):
             idx_lam = np.where(np.logical_and(np.exp(logLam) > config['SFH']['LMIN'], np.exp(logLam) < config['SFH']['LMAX']))[0]
 
             # Read the SPEC and ESPEC data from the file, only for the selected indices
-            bin_data = hdul[1].data['SPEC'].T[idx_lam, :]
-            bin_err = hdul[1].data['ESPEC'].T[idx_lam, :]
+            wd = _auxiliary.workspace_dtype(config)
+            bin_data = np.asarray(
+                hdul[1].data['SPEC'].T[idx_lam, :], dtype=wd
+            )
+            bin_err = np.asarray(
+                hdul[1].data['ESPEC'].T[idx_lam, :], dtype=wd
+            )
             logLam = logLam[idx_lam]
             nbins = bin_data.shape[1]
             npix = bin_data.shape[0]
@@ -753,8 +758,9 @@ def extractStarFormationHistories(config):
             idx_lam = np.where(np.logical_and(np.exp(logLam) > config['SFH']['LMIN'], np.exp(logLam) < config['SFH']['LMAX']))[0]
 
             # Read the SPEC and ESPEC data from the file, only for the selected indices
-            bin_data = f['SPEC'][idx_lam, :]
-            bin_err = f['ESPEC'][idx_lam, :]
+            wd = _auxiliary.workspace_dtype(config)
+            bin_data = np.asarray(f['SPEC'][idx_lam, :], dtype=wd)
+            bin_err = np.asarray(f['ESPEC'][idx_lam, :], dtype=wd)
             logLam = logLam[idx_lam]
 
     # Define additional variables

@@ -17,6 +17,7 @@ This document describes the **architecture** and **usage** of the nGIST pipeline
 | **Config** | Single YAML file path passed via `--config`; optional `--default-dir` for base paths |
 | **Run model** | One run per invocation; one galaxy per config file (`ngalaxies = 1`) |
 | **Config keys (top-level)** | `GENERAL`, `READ_DATA`, `SPATIAL_MASKING`, `SPATIAL_BINNING`, `PREPARE_SPECTRA`, `PREPARE_TEMPLATES`, `KIN`, `CONT`, `GAS`, `SFH`, `LS`, `UMOD` (optional) |
+| **Workspace dtype** | `GENERAL["USE_FLOAT32"]` or `GENERAL["ARRAY_DTYPE"]` (`"float32"` / `"float64"`) selects float precision for large spectral arrays and related HDF5/FITS writes (default float64). `NGIST_USE_FLOAT64=1` forces float64. |
 | **Output root** | `config["GENERAL"]["OUTPUT"]`; run prefix = `os.path.join(OUTPUT, config["GENERAL"]["RUN_ID"])` |
 | **Main source** | `ngistPipeline/MainPipeline.py` (orchestration); modules under `ngistPipeline/<module_name>/` |
 | **Module pattern** | Each pipeline stage has `_<module>/_<module>.py` with `<module>_Module(config[, cube])`; method chosen by `config["<SECTION>"]["METHOD"]`; plugins are `<Method>.py` or `<method>_<suffix>_wrapper.py` in the same folder |

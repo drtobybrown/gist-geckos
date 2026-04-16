@@ -1,4 +1,5 @@
 import glob
+import logging
 import os
 import sys
 
@@ -206,3 +207,32 @@ def saveConfigToHeader(hdu, config):
     for i in config.keys():
         hdu.header[i] = config[i]
     return hdu
+
+
+def workspace_dtype(config):
+    """
+    NumPy dtype for large spectral arrays and HDF5 spectral products.
+
+    Set ``GENERAL["USE_FLOAT32"]: true`` in MasterConfig to reduce RAM and disk
+    footprint, or ``GENERAL["ARRAY_DTYPE"]: "float32"`` / ``"float64"``.
+    Default is float64 for backward compatibility.
+
+    Environment ``NGIST_USE_FLOAT64=1`` (or ``true``) forces float64 regardless
+    of YAML (for quick validation against float32 runs).
+    """
+    if os.environ.get("NGIST_USE_FLOAT64", "").strip().lower() in ("1", "true", "yes"):
+        return np.dtype(np.float64)
+    g = config.get("GENERAL", {})
+    ad = g.get("ARRAY_DTYPE")
+    if ad is not None:
+        s = str(ad).strip().lower()
+        if s in ("float32", "f4", "single"):
+            return np.dtype(np.float32)
+        if s in ("float64", "f8", "double"):
+            return np.dtype(np.float64)
+        logging.warning("GENERAL['ARRAY_DTYPE']=%r invalid; using float64", ad)
+        return np.dtype(np.float64)
+    v = g.get("USE_FLOAT32", False)
+    if isinstance(v, str):
+        v = v.strip().lower() in ("true", "1", "yes")
+    return np.dtype(np.float32) if v else np.dtype(np.float64)
