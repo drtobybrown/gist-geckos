@@ -6,6 +6,27 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
+V7.4.3       2026-05-08 FIXED: NaN handling end-to-end across binning, coadds, and pPXF wrappers.
+			 - Voronoi `sn_func` now uses `np.nansum` and returns -inf when the
+			   aggregate is non-finite, so NaN scalars cannot bias seeding or
+			   accretion in `vorbin.voronoi_2d_binning`.
+			 - `generateSpatialBins` defensively drops spaxels with non-finite
+			   scalar signal/noise from Voronoi inputs (recorded as masked with
+			   nearest-bin assignment in `_table.fits`).
+			 - `maskDefunctSpaxels` now also rejects spaxels with non-finite
+			   scalar signal/noise/snr; `applySNRThreshold` no longer lets NaN
+			   silently fall through `>=`/`<` comparisons.
+			 - `prepareSpectra.spatialBinning` replaces fully-NaN bin/wavelength
+			   variance entries with a large sentinel so pPXF does not interpret
+			   them as zero-error pixels.
+			 - Centralised KIN/CONT/GAS/SFH pPXF input sanitisation in
+			   `ngistPipeline/auxiliary/_ppxf_sanitize.py`. SFH `run_ppxf_firsttime`
+			   now enforces the same finite-median, min-goodPixels guards as the
+			   other modules.
+			 Bin maps for clean cubes are unchanged; bin maps for cubes with
+			 non-finite scalars may shift slightly because such spaxels are now
+			 explicitly excluded from binning.
+
 V7.4.2       2026-04-10 FIXED: GAS equivalent width (pPXF) on Voronoi BIN runs used line flux
 			 after per-spaxel normalization while continuum matched the coadded bin
 			 spectrum, underestimating EW by the number of spaxels per bin. EW is now

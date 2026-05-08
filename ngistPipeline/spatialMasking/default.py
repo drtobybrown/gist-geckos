@@ -74,7 +74,10 @@ def generateSpatialMask(config, cube):
 
 def maskDefunctSpaxels(cube):
     """
-    Mask defunct spaxels: those with all-NaN spectra or non-positive median flux.
+    Mask defunct spaxels: those with all-NaN spectra, non-positive median flux,
+    or non-finite scalar signal/noise/snr (which would otherwise propagate NaNs
+    into the Voronoi binning step).
+
     Spaxels with only some NaNs (e.g. bad pixels) but valid median are kept so
     that real data with occasional bad pixels is not over-masked.
     """
@@ -83,12 +86,30 @@ def maskDefunctSpaxels(cube):
     # Defunct = entirely NaN spectrum OR median flux <= 0 (reject zero/negative)
     all_nan = np.all(np.isnan(spec), axis=0)
     median_nonpositive = np.nanmedian(spec, axis=0) <= 0.0
-    idx_bad = np.where(np.logical_or(all_nan, median_nonpositive))[0]
-    idx_good = np.where(~np.logical_or(all_nan, median_nonpositive))[0]
+
+    # Also reject spaxels whose Voronoi-binning scalars are non-finite. The
+    # relaxed "any-NaN" -> defunct policy (see V7.4.x changelog) intentionally
+    # keeps partial-NaN spectra, but their summary scalars must still be safe
+    # for downstream NaN-sensitive operations (vorbin, mask thresholds).
+    nonfinite_scalars = (
+        ~np.isfinite(cube.get("signal", np.zeros(spec.shape[1])))
+        | ~np.isfinite(cube.get("noise", np.zeros(spec.shape[1])))
+        | ~np.isfinite(cube.get("snr", np.zeros(spec.shape[1])))
+    )
+
+    bad = np.logical_or.reduce((all_nan, median_nonpositive, nonfinite_scalars))
+    idx_bad = np.where(bad)[0]
+    idx_good = np.where(~bad)[0]
 
     logging.info(
         "Masking defunct spaxels: " + str(len(idx_bad)) + " spaxels are rejected."
     )
+    n_nonfinite = int(np.sum(nonfinite_scalars))
+    if n_nonfinite > 0:
+        logging.info(
+            "  of which %d due to non-finite scalar signal/noise/snr",
+            n_nonfinite,
+        )
 
     masked = np.ones(len(cube["snr"]), dtype=bool)
     masked[idx_good] = False
@@ -99,16 +120,25 @@ def applySNRThreshold(snr, signal, min_snr, threshold_method="isophote"):
     """
     Mask those spaxels that are above the isophote level with a mean
     signal-to-noise ratio of MIN_SNR.
+
+    Non-finite snr/signal entries are explicitly rejected (NaN comparisons
+    return False so without this they would silently fall through to the
+    inside set when used with bare ``>=``/``<`` operators).
     """
+    finite = np.isfinite(snr) & np.isfinite(signal)
+
     if threshold_method == "isophote":
-        idx_snr = np.where(np.abs(snr - min_snr) < 2.0)[0]
-        meanmin_signal = np.mean(signal[idx_snr])
-        idx_inside = np.where(signal >= meanmin_signal)[0]
-        idx_outside = np.where(signal < meanmin_signal)[0]
+        idx_snr = np.where(finite & (np.abs(snr - min_snr) < 2.0))[0]
+        if len(idx_snr) > 0:
+            meanmin_signal = np.mean(signal[idx_snr])
+        else:
+            meanmin_signal = min_snr  # fallback: cannot compute isophote level
+        idx_inside = np.where(finite & (signal >= meanmin_signal))[0]
+        idx_outside = np.where((~finite) | (signal < meanmin_signal))[0]
 
     if threshold_method == "actual":
-        idx_inside = np.where(snr >= min_snr)[0]
-        idx_outside = np.where(snr < min_snr)[0]
+        idx_inside = np.where(finite & (snr >= min_snr))[0]
+        idx_outside = np.where((~finite) | (snr < min_snr))[0]
 
     if len(idx_inside) == 0 and len(idx_outside) == 0:
         idx_inside = np.arange(len(snr))

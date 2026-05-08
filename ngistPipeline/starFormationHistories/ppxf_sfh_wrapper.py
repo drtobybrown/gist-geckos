@@ -15,6 +15,7 @@ from printStatus import printStatus
 from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary._ppxf_sanitize import prepare_for_ppxf
 from ngistPipeline.prepareTemplates import _prepareTemplates
 
 robust_sigma = _auxiliary.robust_sigma
@@ -60,25 +61,13 @@ def run_ppxf_firsttime(
     """
     # Call PPXF for first time to get optimal template
     printStatus.running("Running pPXF for the first time")
-    # normalise galaxy spectra and noise
-    median_log_bin_data = np.nanmedian(log_bin_data)
-    log_bin_error = log_bin_error / median_log_bin_data
-    log_bin_data = log_bin_data / median_log_bin_data
 
-    # Remove goodPixels where data or error is NaN, non-finite, or non-positive
-    # (e.g. from NaN variance channels in MUSE cubes)
-    valid = (
-        np.isfinite(log_bin_data[goodPixels])
-        & np.isfinite(log_bin_error[goodPixels])
-        & (log_bin_error[goodPixels] > 0)
+    # Sanitise inputs for pPXF (validate normalisation, filter goodPixels,
+    # replace residual non-finite values with safe sentinels). Mirrors the
+    # contract used by KIN/CONT/GAS so SFH first-pass behaves consistently.
+    log_bin_data, log_bin_error, goodPixels, median_log_bin_data = prepare_for_ppxf(
+        log_bin_data, log_bin_error, goodPixels
     )
-    goodPixels = goodPixels[valid]
-
-    # Replace any remaining NaN in the full arrays with safe values
-    nan_data = ~np.isfinite(log_bin_data)
-    nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
-    log_bin_data[nan_data] = 0.0
-    log_bin_error[nan_err] = 1e10
 
     pp = ppxf(
         templates,
@@ -144,34 +133,11 @@ def run_ppxf(
 
         if len(optimal_template_in) > 1:
 
-            # Normalise galaxy spectra and noise
-            median_log_bin_data = np.nanmedian(log_bin_data)
-            if not np.isfinite(median_log_bin_data) or median_log_bin_data <= 0:
-                raise ValueError(
-                    "spectrum median is not finite and positive (got %s)" % median_log_bin_data
-                )
-            log_bin_error = log_bin_error / median_log_bin_data
-            log_bin_data = log_bin_data / median_log_bin_data
-
-            # Remove goodPixels where data or error is NaN, non-finite, or non-positive
-            # (e.g. from NaN variance channels in MUSE cubes)
-            valid = (
-                np.isfinite(log_bin_data[goodPixels])
-                & np.isfinite(log_bin_error[goodPixels])
-                & (log_bin_error[goodPixels] > 0)
+            # Sanitise inputs for pPXF (validate normalisation, filter goodPixels,
+            # replace residual non-finite values with safe sentinels).
+            log_bin_data, log_bin_error, goodPixels, median_log_bin_data = prepare_for_ppxf(
+                log_bin_data, log_bin_error, goodPixels
             )
-            goodPixels = goodPixels[valid]
-            if len(goodPixels) < 10:
-                raise ValueError(
-                    "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
-                    % len(goodPixels)
-                )
-
-            # Replace any remaining NaN in the full arrays with safe values
-            nan_data = ~np.isfinite(log_bin_data)
-            nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
-            log_bin_data[nan_data] = 0.0
-            log_bin_error[nan_err] = 1e10
 
             # Here add in the extra, 0th step to estimate the dust and print out the E(B-V) map
             # Call PPXF, using an extinction law, no polynomials.

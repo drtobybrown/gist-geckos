@@ -151,6 +151,41 @@ Maps are **FITS images** with one extension per quantity (e.g. V, SIGMA, or per-
 
 ---
 
-## 12. Version and citation
+## 12. NaN handling and binning policy
+
+The pipeline accepts cubes that contain partial NaN values per spaxel (for
+example MUSE STAT extensions with NaN wavelength channels). NaNs are handled
+deterministically at every stage so that bin assignments and pPXF fits remain
+reproducible:
+
+- **Defunct mask** (`spatialMasking.maskDefunctSpaxels`): a spaxel is rejected
+  if its spectrum is entirely NaN, if `nanmedian(spec) <= 0`, or if any of the
+  scalar `signal`/`noise`/`snr` summary values are non-finite.
+- **SNR threshold** (`spatialMasking.applySNRThreshold`): NaN snr/signal values
+  are explicitly placed in the rejected set; they never fall through silently.
+- **Voronoi binning** (`spatialBinning.voronoi`): the `sn_func` aggregator uses
+  `np.nansum` and returns `-inf` for non-finite aggregates, and
+  `generateSpatialBins` drops any spaxels with non-finite scalar signal/noise
+  from the inputs to `voronoi_2d_binning`. Such spaxels still appear in
+  `_table.fits` with a negative `BIN_ID` corresponding to the nearest bin.
+- **Spectral coadds** (`prepareSpectra.spatialBinning`): bin spectra are
+  combined with `np.nansum`. For wavelength channels where every spaxel in the
+  bin has NaN variance, the combined error is set to a large sentinel
+  (sqrt(1e20)) so the channel is down-weighted by pPXF rather than treated as
+  perfect S/N.
+- **pPXF fits** (KIN/CONT/GAS/SFH): all wrappers use a shared sanitisation
+  helper (`ngistPipeline/auxiliary/_ppxf_sanitize.py`). The contract is
+  (1) require a finite, positive normalisation median; (2) drop goodPixels
+  whose data or noise is non-finite or whose noise is non-positive; (3) raise
+  if fewer than 10 usable pixels remain; (4) replace residual non-finite
+  entries with safe sentinels (data 0.0, noise 1e10) so pPXF does not fail on
+  pixels outside `goodPixels`.
+
+For clean cubes (no NaNs in scalars or variance), this policy is a no-op and
+bin maps are bit-identical to the V7.4.2 behaviour. For cubes that contain
+non-finite scalars, bin assignments may differ slightly from earlier
+versions because such spaxels are now explicitly excluded from binning.
+
+## 13. Version and citation
 
 Pipeline version is recorded in the codebase (`_version.py`). For **reproducible** results, record the nGIST version and the configuration file used. Citation: Fraser-McKelvie et al. 2025, A&A 700, 237; nGIST ASCL entry https://ascl.net/2507.015.

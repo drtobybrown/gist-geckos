@@ -12,6 +12,7 @@ from printStatus import printStatus
 from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary._ppxf_sanitize import prepare_for_ppxf
 from ngistPipeline.prepareTemplates import _prepareTemplates
 
 robust_sigma = _auxiliary.robust_sigma
@@ -64,39 +65,11 @@ def run_ppxf(
         except (TypeError, AttributeError):
             use_first_run = True
 
-        # Require valid goodpixels and normalisation for PPXF
-        if goodPixels is None or len(goodPixels) < 10:
-            raise ValueError("goodPixels empty or too few pixels for PPXF")
-        median_log_bin_data = np.nanmedian(log_bin_data)
-        if not np.isfinite(median_log_bin_data) or median_log_bin_data <= 0:
-            raise ValueError(
-                "spectrum median is not finite and positive (got %s)" % median_log_bin_data
-            )
-
-        # normalise galaxy spectra and noise
-        log_bin_error = log_bin_error / median_log_bin_data
-        log_bin_data = log_bin_data / median_log_bin_data
-
-        # Remove goodPixels where data or error is NaN, non-finite, or non-positive
-        # (e.g. from NaN variance channels in MUSE cubes)
-        valid = (
-            np.isfinite(log_bin_data[goodPixels])
-            & np.isfinite(log_bin_error[goodPixels])
-            & (log_bin_error[goodPixels] > 0)
+        # Sanitise inputs for pPXF (validate normalisation, filter goodPixels,
+        # replace residual non-finite values with safe sentinels).
+        log_bin_data, log_bin_error, goodPixels, median_log_bin_data = prepare_for_ppxf(
+            log_bin_data, log_bin_error, goodPixels
         )
-        goodPixels = goodPixels[valid]
-        if len(goodPixels) < 10:
-            raise ValueError(
-                "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
-                % len(goodPixels)
-            )
-
-        # Replace any remaining NaN in the full arrays with safe values so pPXF
-        # doesn't choke on non-goodPixel entries it may still inspect.
-        nan_data = ~np.isfinite(log_bin_data)
-        nan_err = ~np.isfinite(log_bin_error) | (log_bin_error <= 0)
-        log_bin_data[nan_data] = 0.0
-        log_bin_error[nan_err] = 1e10  # large error effectively down-weights these pixels
 
         #calculate the snr before the fit (may be used for bias)
         snr_prefit = np.nanmedian(log_bin_data[goodPixels]/log_bin_error[goodPixels])

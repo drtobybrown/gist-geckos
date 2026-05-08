@@ -27,10 +27,20 @@ def sn_func(index, signal=None, noise=None, covar_vor=0.00):
     Garcia-Benito et al. 2015;
     ui.adsabs.harvard.edu/?#abs/2015A&A...576A.135G) together with the
     parameter defined in the Config-file.
+
+    NaN safety: ``np.nansum`` is used so that any non-finite scalars that slip
+    through upstream sanitisation do not contaminate the bin S/N. If the
+    aggregate is non-finite (e.g. all members were NaN) we return ``-inf`` so
+    the caller (vorbin) treats the bin as far below ``target_sn`` and never
+    seeds binning from such a candidate.
     """
 
     # Add the noise in the spaxels to obtain the noise in the bin
-    sn = np.sum(signal[index]) / np.sqrt(np.sum(noise[index] ** 2))
+    s_sum = np.nansum(signal[index])
+    n_sq_sum = np.nansum(noise[index] ** 2)
+    if not np.isfinite(s_sum) or not np.isfinite(n_sq_sum) or n_sq_sum <= 0:
+        return -np.inf
+    sn = s_sum / np.sqrt(n_sq_sum)
 
     # Account for spatial correlations in the noise by applying an empirical
     # equation (see e.g. Garcia-Benito et al. 2015;
@@ -69,6 +79,26 @@ def generateSpatialBins(config, cube):
     mask = fits.open(maskfile, memmap=True)[1].data.MASK
     idxUnmasked = np.where(mask == 0)[0]
     idxMasked = np.where(mask == 1)[0]
+
+    # Defensive guard: drop any spaxels with non-finite scalar signal or noise
+    # that may have slipped past the spatial mask. vorbin is path-dependent and
+    # NaN inputs can silently bias seeding (np.argmax) and accretion decisions.
+    finite_scalars = (
+        np.isfinite(cube["signal"][idxUnmasked])
+        & np.isfinite(cube["noise"][idxUnmasked])
+        & (cube["noise"][idxUnmasked] > 0)
+    )
+    n_dropped = int(np.sum(~finite_scalars))
+    if n_dropped > 0:
+        dropped = idxUnmasked[~finite_scalars]
+        idxUnmasked = idxUnmasked[finite_scalars]
+        # Treat dropped spaxels as masked so their nearest-bin assignment is
+        # still recorded with a negative BIN_ID downstream.
+        idxMasked = np.unique(np.concatenate([idxMasked, dropped]))
+        logging.warning(
+            "Dropped %d spaxels with non-finite scalar signal/noise from Voronoi inputs",
+            n_dropped,
+        )
 
     if len(idxUnmasked) == 0:
         printStatus.updateFailed("Defining the Voronoi bins")

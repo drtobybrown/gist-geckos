@@ -297,7 +297,21 @@ def applySpatialBins(binNum, spec, espec, velscale, flag):
 
 
 def spatialBinning(binNum, spec, error):
-    """Spectra belonging to the same spatial bin are added (vectorized per bin)."""
+    """Spectra belonging to the same spatial bin are added (vectorized per bin).
+
+    Variance handling: ``np.nansum`` is used so partial-NaN variance channels
+    (e.g. MUSE cube gaps) do not poison whole bins. However, if a wavelength
+    channel is fully-NaN across every spaxel in a bin, ``nansum`` returns 0,
+    which would be interpreted by pPXF as a perfect-S/N pixel. We detect those
+    fully-masked channels and replace their summed variance with a large
+    sentinel (``ERROR_SENTINEL_VAR``) so the resulting noise is large and
+    those pixels are effectively down-weighted in the fit.
+    """
+    # Sentinel variance applied to fully-NaN bin/wavelength entries. The
+    # square root of this matches the noise sentinel used in pPXF wrappers
+    # (1e10), keeping the down-weighting consistent across the pipeline.
+    ERROR_SENTINEL_VAR = 1e20
+
     ubins = np.unique(binNum)
     nbins = len(ubins)
     npix = spec.shape[0]
@@ -309,10 +323,19 @@ def spatialBinning(binNum, spec, error):
 
     for i in range(nbins):
         k = bin_idx == i
-        av_spec = np.nansum(spec[:, k], axis=1)
+        spec_slice = spec[:, k]
+        error_slice = error[:, k]
+        av_spec = np.nansum(spec_slice, axis=1)
         # error is variance; nansum then sqrt for combined sigma
         # (use nansum to handle NaN variance channels, e.g. from MUSE cube gaps)
-        av_err_spec = np.sqrt(np.nansum(error[:, k], axis=1))
+        var_sum = np.nansum(error_slice, axis=1)
+        # Detect channels where every spaxel in the bin had NaN variance: nansum
+        # returned 0 there. Use a sentinel variance so they become down-weighted
+        # rather than treated as zero error.
+        if error_slice.size > 0:
+            all_nan_channels = np.all(np.isnan(error_slice), axis=1)
+            var_sum = np.where(all_nan_channels, ERROR_SENTINEL_VAR, var_sum)
+        av_err_spec = np.sqrt(var_sum)
         bin_data[:, i] = np.ravel(av_spec)
         bin_error[:, i] = np.ravel(av_err_spec)
         bin_flux[i] = np.mean(av_spec)

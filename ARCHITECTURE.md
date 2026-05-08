@@ -217,6 +217,19 @@ Each pipeline stage is implemented as a **dispatcher** that:
 
 Exact file names and structures are in [PRODUCTS.md](PRODUCTS.md).
 
+**NaN handling at module boundaries.** The pipeline accepts cubes with partial
+NaN values (e.g. MUSE STAT NaN channels) and applies a deterministic policy at
+each boundary. See `PRODUCTS.md` Section 12 for the full policy. In short:
+
+- Spatial mask drops spaxels with all-NaN spectra, non-positive median, or
+  non-finite scalar `signal`/`noise`/`snr`.
+- Voronoi `sn_func` uses `np.nansum`; `generateSpatialBins` drops any
+  remaining non-finite-scalar spaxels before calling `vorbin`.
+- `prepareSpectra` coadds use `np.nansum`; bin/wavelength entries that are
+  fully NaN across a bin get a large sentinel variance.
+- All pPXF wrappers (KIN/CONT/GAS/SFH) share the input sanitisation contract
+  in `ngistPipeline/auxiliary/_ppxf_sanitize.py`.
+
 ---
 
 ## 6. Usage summary
@@ -268,7 +281,7 @@ ngistPipeline --config /path/to/config.yaml --default-dir /path/to/defaultDir
 | `ngistPipeline/lineStrengths/` | Dispatcher + default, lsindex_spec, ssppop_fitting. |
 | `ngistPipeline/userModules/` | Dispatcher + user plugins (e.g. twocomp_ppxf). |
 | `ngistPipeline/writeFITS/` | generateFITS dispatcher + save_maps_fits (all FITS writing). |
-| `ngistPipeline/auxiliary/` | Shared helpers (e.g. LSF loading, robust_sigma). |
+| `ngistPipeline/auxiliary/` | Shared helpers (e.g. LSF loading, robust_sigma, pPXF input sanitisation in `_ppxf_sanitize.py`). |
 | `ngistPipeline/plotting/` | gistPlot_* scripts. |
 | `ngistPipeline/mapviewer/` | Mapviewer GUI. |
 | `ngistPipeline/utils/` | e.g. WCS helpers. |

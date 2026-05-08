@@ -13,6 +13,7 @@ from printStatus import printStatus
 from tqdm import tqdm
 
 from ngistPipeline.auxiliary import _auxiliary
+from ngistPipeline.auxiliary._ppxf_sanitize import prepare_for_ppxf
 from ngistPipeline.prepareTemplates import (_prepareTemplates,
                                            prepare_gas_templates)
 
@@ -132,26 +133,11 @@ def run_ppxf(
         galaxy_i = np.array(galaxy_i, dtype=float)
         noise_i = np.array(noise_i, dtype=float)
 
-        # Remove goodPixels where data or noise is NaN, non-finite, or non-positive
-        # (e.g. from NaN variance channels in MUSE cubes)
-        valid = (
-            np.isfinite(galaxy_i[goodPixels])
-            & np.isfinite(noise_i[goodPixels])
-            & (noise_i[goodPixels] > 0)
+        # Sanitise inputs for pPXF without renormalising (gas wrapper preserves
+        # the input flux scale; pPXF does not require galaxy_i to be median=1).
+        galaxy_i, noise_i, goodPixels, _ = prepare_for_ppxf(
+            galaxy_i, noise_i, goodPixels, normalise=False
         )
-        goodPixels = goodPixels[valid]
-        if len(goodPixels) < 10:
-            raise ValueError(
-                "Too few valid goodPixels after removing NaN/non-positive noise (%d remain)"
-                % len(goodPixels)
-            )
-
-        # Replace any remaining NaN in the full arrays with safe values so pPXF
-        # doesn't choke on non-goodPixel entries it may still inspect.
-        nan_gal = ~np.isfinite(galaxy_i)
-        nan_noise = ~np.isfinite(noise_i) | (noise_i <= 0)
-        galaxy_i[nan_gal] = 0.0
-        noise_i[nan_noise] = 1e10
 
         pp = ppxf(
             templates,
