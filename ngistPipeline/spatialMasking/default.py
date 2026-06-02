@@ -5,6 +5,9 @@ import numpy as np
 from astropy.io import fits
 from printStatus import printStatus
 
+# Spaxels with more than this fraction of NaN flux channels are marked defunct.
+DEFUNCT_MAX_NAN_FRAC = 0.01
+
 
 def generate_spatial_mask(config, cube):
     """
@@ -72,38 +75,43 @@ def generateSpatialMask(config, cube):
     return None
 
 
-def maskDefunctSpaxels(cube):
+def maskDefunctSpaxels(cube, max_nan_frac=DEFUNCT_MAX_NAN_FRAC):
     """
-    Mask defunct spaxels: those with all-NaN spectra, non-positive median flux,
-    or non-finite scalar signal/noise/snr (which would otherwise propagate NaNs
-    into the Voronoi binning step).
+    Mask defunct spaxels: all-NaN spectra, >max_nan_frac NaN channels, non-positive
+    median flux, or non-finite scalar signal/noise/snr.
 
-    Spaxels with only some NaNs (e.g. bad pixels) but valid median are kept so
-    that real data with occasional bad pixels is not over-masked.
+    Occasional bad pixels (NaN fraction at or below max_nan_frac, default 1%) are
+    kept; spaxels with larger gaps are rejected before Voronoi binning.
     """
     spec = cube["spec"]
 
-    # Defunct = entirely NaN spectrum OR median flux <= 0 (reject zero/negative)
     all_nan = np.all(np.isnan(spec), axis=0)
+    nan_frac = np.mean(np.isnan(spec), axis=0)
+    excess_nan = nan_frac > max_nan_frac
     median_nonpositive = np.nanmedian(spec, axis=0) <= 0.0
 
-    # Also reject spaxels whose Voronoi-binning scalars are non-finite. The
-    # relaxed "any-NaN" -> defunct policy (see V7.4.x changelog) intentionally
-    # keeps partial-NaN spectra, but their summary scalars must still be safe
-    # for downstream NaN-sensitive operations (vorbin, mask thresholds).
     nonfinite_scalars = (
         ~np.isfinite(cube.get("signal", np.zeros(spec.shape[1])))
         | ~np.isfinite(cube.get("noise", np.zeros(spec.shape[1])))
         | ~np.isfinite(cube.get("snr", np.zeros(spec.shape[1])))
     )
 
-    bad = np.logical_or.reduce((all_nan, median_nonpositive, nonfinite_scalars))
+    bad = np.logical_or.reduce(
+        (all_nan, excess_nan, median_nonpositive, nonfinite_scalars)
+    )
     idx_bad = np.where(bad)[0]
     idx_good = np.where(~bad)[0]
 
     logging.info(
         "Masking defunct spaxels: " + str(len(idx_bad)) + " spaxels are rejected."
     )
+    n_excess_nan = int(np.sum(excess_nan & ~all_nan))
+    if n_excess_nan > 0:
+        logging.info(
+            "  of which %d due to NaN fraction > %.2g",
+            n_excess_nan,
+            max_nan_frac,
+        )
     n_nonfinite = int(np.sum(nonfinite_scalars))
     if n_nonfinite > 0:
         logging.info(

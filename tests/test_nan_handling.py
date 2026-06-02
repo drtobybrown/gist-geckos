@@ -16,6 +16,7 @@ from ngistPipeline.auxiliary._ppxf_sanitize import (
 from ngistPipeline.prepareSpectra.default import spatialBinning as coadd_spatial_bins
 from ngistPipeline.spatialBinning.voronoi import sn_func
 from ngistPipeline.spatialMasking.default import (
+    DEFUNCT_MAX_NAN_FRAC,
     applySNRThreshold,
     maskDefunctSpaxels,
 )
@@ -79,6 +80,22 @@ def test_maskDefunctSpaxels_rejects_nonfinite_scalars():
     assert masked[0]
     assert masked[1]
     assert masked[2]
+    assert not masked[3]
+
+
+def test_maskDefunctSpaxels_nan_fraction_threshold():
+    npix = 200
+    n_spaxels = 4
+    spec = np.ones((npix, n_spaxels))
+    # spaxel 0: 1% NaN exactly -> keep
+    spec[0, 0] = np.nan
+    # spaxel 1: >1% NaN -> reject
+    spec[:3, 1] = np.nan
+    cube = _make_cube(nx=2, ny=2, npix=npix, spec=spec)
+    masked = maskDefunctSpaxels(cube, max_nan_frac=DEFUNCT_MAX_NAN_FRAC)
+    assert not masked[0]
+    assert masked[1]
+    assert not masked[2]
     assert not masked[3]
 
 
