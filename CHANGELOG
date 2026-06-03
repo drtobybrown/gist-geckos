@@ -6,9 +6,10 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
-V7.4.4       2026-06-02 CHANGED: Defunct mask rejects spaxels with >1% NaN flux channels
-			 (`DEFUNCT_MAX_NAN_FRAC`), bridging strict any-NaN (v0.6) and
-			 all-NaN-only (V7.4.1 PHANGS) policies for edge spaxels.
+V7.4.4       2026-06-02 CHANGED: Defunct mask `DEFUNCT_MAX_NAN_FRAC` default set to 0
+			 (strict any-NaN-channel policy, v0.6-compatible). The parameter
+			 remains overridable via `maskDefunctSpaxels(..., max_nan_frac=...)`
+			 for partial-NaN tolerance (e.g. PHANGS).
 
 V7.4.3       2026-05-08 FIXED: NaN handling end-to-end across binning, coadds, and pPXF wrappers.
 			 - Voronoi `sn_func` now uses `np.nansum` and returns -inf when the

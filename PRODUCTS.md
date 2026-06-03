@@ -159,7 +159,9 @@ deterministically at every stage so that bin assignments and pPXF fits remain
 reproducible:
 
 - **Defunct mask** (`spatialMasking.maskDefunctSpaxels`): a spaxel is rejected
-  if its spectrum is entirely NaN, if more than 1% of flux channels are NaN,
+  if its spectrum is entirely NaN, if any flux channel is NaN (default
+  `DEFUNCT_MAX_NAN_FRAC=0`, v0.6-compatible), or if more than a configured
+  fraction of channels are NaN when that threshold is raised,
   if `nanmedian(spec) <= 0`, or if any of the scalar `signal`/`noise`/`snr`
   summary values are non-finite.
 - **SNR threshold** (`spatialMasking.applySNRThreshold`): NaN snr/signal values
