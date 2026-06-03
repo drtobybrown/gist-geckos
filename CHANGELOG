@@ -6,6 +6,11 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
+V7.4.5       2026-06-02 CHANGED: Defunct mask `DEFUNCT_MAX_NAN_FRAC` default restored
+			 to 0.01 (reject spaxels when >1% of flux channels are NaN). Use
+			 `maskDefunctSpaxels(..., max_nan_frac=0)` for v0.6-compatible strict
+			 any-NaN defunct masking.
+
 V7.4.4       2026-06-02 CHANGED: Defunct mask `DEFUNCT_MAX_NAN_FRAC` default set to 0
 			 (strict any-NaN-channel policy, v0.6-compatible). The parameter
 			 remains overridable via `maskDefunctSpaxels(..., max_nan_frac=...)`

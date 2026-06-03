@@ -83,28 +83,28 @@ def test_maskDefunctSpaxels_rejects_nonfinite_scalars():
     assert not masked[3]
 
 
-def test_maskDefunctSpaxels_rejects_any_nan_at_default():
+def test_maskDefunctSpaxels_default_allows_up_to_one_percent_nan():
     npix = 200
     n_spaxels = 4
     spec = np.ones((npix, n_spaxels))
-    spec[0, 0] = np.nan
-    spec[:3, 1] = np.nan
+    spec[0, 0] = np.nan  # 0.5% NaN — below default threshold
+    spec[:3, 1] = np.nan  # 1.5% NaN — above default threshold
     cube = _make_cube(nx=2, ny=2, npix=npix, spec=spec)
-    assert DEFUNCT_MAX_NAN_FRAC == 0.0
+    assert DEFUNCT_MAX_NAN_FRAC == 0.01
     masked = maskDefunctSpaxels(cube)
-    assert masked[0]
+    assert not masked[0]
     assert masked[1]
     assert not masked[2]
     assert not masked[3]
 
 
-def test_maskDefunctSpaxels_allows_partial_nan_when_threshold_set():
+def test_maskDefunctSpaxels_strict_any_nan_when_threshold_zero():
     npix = 200
     spec = np.ones((npix, 2))
     spec[0, 0] = np.nan
     cube = _make_cube(nx=2, ny=1, npix=npix, spec=spec)
-    masked = maskDefunctSpaxels(cube, max_nan_frac=0.01)
-    assert not masked[0]
+    masked = maskDefunctSpaxels(cube, max_nan_frac=0.0)
+    assert masked[0]
 
 
 def test_applySNRThreshold_actual_rejects_nan_snr():

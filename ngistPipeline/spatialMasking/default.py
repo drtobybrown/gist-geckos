@@ -6,8 +6,8 @@ from astropy.io import fits
 from printStatus import printStatus
 
 # Spaxels with more than this fraction of NaN flux channels are marked defunct.
-# 0 = strict any-NaN-channel policy (v0.6-compatible defunct masking).
-DEFUNCT_MAX_NAN_FRAC = 0.0
+# 0.01 allows partial-NaN spectra (e.g. PHANGS/MUSE STAT gaps); use 0 for v0.6.
+DEFUNCT_MAX_NAN_FRAC = 0.01
 
 
 def generate_spatial_mask(config, cube):
@@ -81,8 +81,9 @@ def maskDefunctSpaxels(cube, max_nan_frac=DEFUNCT_MAX_NAN_FRAC):
     Mask defunct spaxels: all-NaN spectra, >max_nan_frac NaN channels, non-positive
     median flux, or non-finite scalar signal/noise/snr.
 
-    When max_nan_frac is 0 (default), any NaN flux channel marks the spaxel defunct
-    (v0.6 policy). Larger values allow partial-NaN spectra up to that fraction.
+    Default ``max_nan_frac`` is ``DEFUNCT_MAX_NAN_FRAC`` (1%). Spaxels with at most
+    that fraction of NaN flux channels are kept. Use ``max_nan_frac=0`` for strict
+    any-NaN-channel (v0.6) defunct masking.
     """
     spec = cube["spec"]
 
