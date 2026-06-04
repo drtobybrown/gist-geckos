@@ -67,32 +67,60 @@ def read_header_wcs(path: Path, ext: int) -> dict:
     }
 
 
-def read_plane(path: Path, ext: int, iz: int) -> np.ndarray:
-    """Read one wavelength plane (ny, nx) as float64."""
+def flat_to_xy(flat_idx: np.ndarray, nx: int) -> tuple[np.ndarray, np.ndarray]:
+    """Convert C-order flat spaxel index to (iy, ix)."""
+    iy = flat_idx // nx
+    ix = flat_idx % nx
+    return iy, ix
+
+
+def list_3d_hdus(path: Path) -> list[dict]:
+    return [h for h in list_hdus(path) if h["naxis"] == 3]
+
+
+def sample_spaxel_indices(n_spax: int, n_sample: int, seed: int) -> np.ndarray:
+    n_sample = min(n_sample, n_spax)
+    rng = np.random.default_rng(seed)
+    return np.sort(rng.choice(n_spax, size=n_sample, replace=False))
+
+
+def read_spectra_in_hdu(
+    path: Path,
+    ext: int,
+    flat_idx: np.ndarray,
+    nx: int,
+    nwave: int,
+) -> np.ndarray:
+    """
+    Read full wavelength axis for selected spaxels from one 3D HDU.
+
+    Returns (nwave, n_sample). One fitsio column read per spaxel ([:, iy, ix]).
+    """
+    ns = len(flat_idx)
+    cube = np.empty((nwave, ns), dtype=np.float64)
+    iy, ix = flat_to_xy(flat_idx, nx)
     with fitsio.FITS(str(path)) as f:
-        slab = f[ext][iz, :, :]
-    return np.asarray(slab, dtype=np.float64)
+        hdu = f[ext]
+        for k in range(ns):
+            cube[:, k] = np.asarray(
+                hdu[:, int(iy[k]), int(ix[k])], dtype=np.float64
+            ).reshape(-1)
+    return cube
 
 
-def estimate_spaxel_chunk_bytes(
-    n_trim: int,
-    chunk_spaxels: int,
-    has_stat: bool,
-) -> int:
-    """Bytes for one spaxel chunk slab (spec [, stat])."""
-    per = 8 * n_trim * chunk_spaxels
-    return per * (2 if has_stat else 1)
-
-
-def check_ram_budget(
-    n_trim: int,
-    chunk_spaxels: int,
-    has_stat: bool,
-    max_gb: float = 25.0,
-) -> None:
-    need = estimate_spaxel_chunk_bytes(n_trim, chunk_spaxels, has_stat)
-    if need > max_gb * 1e9:
-        raise MemoryError(
-            f"Spaxel chunk would need {need / 1e9:.2f} GB > {max_gb} GB; "
-            f"reduce SPAXEL_CHUNK (n_trim={n_trim}, chunk={chunk_spaxels})"
-        )
+def read_spectra_for_spaxels(
+    path: Path,
+    flux_ext: int,
+    stat_ext: int | None,
+    flat_idx: np.ndarray,
+    nx: int,
+    nwave: int,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Read flux and optional stat HDUs (delegates to read_spectra_in_hdu)."""
+    flux_cube = read_spectra_in_hdu(path, flux_ext, flat_idx, nx, nwave)
+    stat_cube = (
+        read_spectra_in_hdu(path, stat_ext, flat_idx, nx, nwave)
+        if stat_ext is not None
+        else None
+    )
+    return flux_cube, stat_cube

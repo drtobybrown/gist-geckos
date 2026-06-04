@@ -27,6 +27,13 @@ def main() -> int:
     ap.add_argument("--lmax-tot", type=float, default=7000.0)
     ap.add_argument("--lmin-snr", type=float, default=4750.0)
     ap.add_argument("--lmax-snr", type=float, default=7100.0)
+    ap.add_argument(
+        "--n-sample",
+        type=int,
+        default=10,
+        help="Random spaxels per cube (all channels)",
+    )
+    ap.add_argument("--sample-seed", type=int, default=42)
     args = ap.parse_args()
 
     df = pd.read_csv(args.catalog)
@@ -58,6 +65,8 @@ def main() -> int:
                 lmax_tot=args.lmax_tot,
                 lmin_snr=args.lmin_snr,
                 lmax_snr=args.lmax_snr,
+                n_sample_spaxels=args.n_sample,
+                sample_seed=args.sample_seed,
             )
             status = "ok"
             err = ""
@@ -72,7 +81,12 @@ def main() -> int:
             st = pd.read_csv(stats_p)
             m = st[st["mask_domain"] == "snr_no_nad"]
             if len(m):
-                frac_no_nad = float(m.iloc[0]["frac_defunct_at_1pct"])
+                col = (
+                    "frac_defunct_at_1pct_in_sample"
+                    if "frac_defunct_at_1pct_in_sample" in st.columns
+                    else "frac_defunct_at_1pct"
+                )
+                frac_no_nad = float(m.iloc[0][col])
 
         index_rows.append({
             "survey": row["survey"],
@@ -81,10 +95,16 @@ def main() -> int:
             "out_dir": str(sub),
             "status": status,
             "error": err,
-            "frac_defunct_0.01": meta.get("frac_defunct", {}).get("0.01"),
-            "frac_defunct_1pct_no_nad": frac_no_nad,
+            "n_sample_spaxels": meta.get("n_sample_spaxels"),
+            "frac_defunct_0.01_in_sample": meta.get("frac_defunct", {}).get("0.01"),
+            "frac_defunct_1pct_no_nad_in_sample": frac_no_nad,
             "mean_frac_nan_in_nad": meta.get("mean_frac_nan_in_nad"),
             "mean_frac_nan_in_laser": meta.get("mean_frac_nan_in_laser"),
+            "has_edge_blank": (meta.get("edge_blank") or {}).get("has_edge_blank"),
+            "n_leading_blank": (meta.get("edge_blank") or {}).get("n_leading_blank"),
+            "frac_defunct_1pct_no_edge": (meta.get("frac_defunct_trim_no_edge") or {}).get(
+                "0.01"
+            ),
         })
         print(f"[{status}] {cube.name}")
 

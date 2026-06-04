@@ -11,8 +11,14 @@ import numpy as np
 import pandas as pd
 
 
+def _flux_frac_col(ch: pd.DataFrame) -> str:
+    if "frac_nan_flux_in_sample" in ch.columns:
+        return "frac_nan_flux_in_sample"
+    return "frac_nan_flux"
+
+
 def stack_channel_profiles(audit_root: Path, index: pd.DataFrame) -> pd.DataFrame:
-    """Mean frac_nan_flux vs lambda_rest per survey (trimmed channels)."""
+    """Mean sample-spaxel NaN fraction vs lambda_rest per survey (trimmed channels)."""
     stacks = []
     for survey in ("PHANGS", "MAUVE"):
         sub = index[index["survey"] == survey]
@@ -25,9 +31,10 @@ def stack_channel_profiles(audit_root: Path, index: pd.DataFrame) -> pd.DataFram
                 continue
             ch = pd.read_csv(ch_path)
             ch = ch[ch["in_trim"] == True]  # noqa: E712
+            fcol = _flux_frac_col(ch)
             for _, row in ch.iterrows():
                 lam = round(float(row["lambda_rest"]), 2)
-                acc.setdefault(lam, []).append(float(row["frac_nan_flux"]))
+                acc.setdefault(lam, []).append(float(row[fcol]))
         for lam, vals in sorted(acc.items()):
             stacks.append({
                 "survey": survey,
@@ -105,12 +112,18 @@ def main() -> int:
             st = pd.read_csv(stats_path)
             row = st[st["mask_domain"] == "snr_no_nad"]
             if len(row):
-                frac_no_nad = float(row.iloc[0]["frac_defunct_at_1pct"])
+                col = (
+                    "frac_defunct_at_1pct_in_sample"
+                    if "frac_defunct_at_1pct_in_sample" in st.columns
+                    else "frac_defunct_at_1pct"
+                )
+                frac_no_nad = float(row.iloc[0][col])
 
         rows.append({
             "survey": r["survey"],
             "galaxy": r.get("galaxy_guess", ""),
             "file": Path(r["path"]).name,
+            "n_sample_spaxels": meta.get("n_sample_spaxels"),
             "flux_ext": meta.get("flux_ext"),
             "stat_ext": meta.get("stat_ext"),
             "frac_defunct_0": meta.get("frac_defunct", {}).get("0.0"),
@@ -119,7 +132,8 @@ def main() -> int:
             "frac_defunct_1pct_no_nad": frac_no_nad,
             "mean_frac_nan_nad": meta.get("mean_frac_nan_in_nad"),
             "mean_frac_nan_laser": meta.get("mean_frac_nan_in_laser"),
-            "n_hot_flux": meta.get("n_hot_channels_flux"),
+            "n_hot_flux": meta.get("n_hot_channels_flux_in_sample")
+            or meta.get("n_hot_channels_flux"),
         })
 
         hot_path = out / f"{stem}_hot_channels.csv"
@@ -145,7 +159,9 @@ def main() -> int:
     lines = [
         "# PHANGS vs MAUVE cube NaN audit summary\n",
         "\n## Pipeline context\n",
-        "- Defunct mask uses `nan_frac` over **full** `LMIN_TOT`–`LMAX_TOT` trim (`ngistPipeline/spatialMasking/default.py`).\n",
+        "- Cube audit uses **10 random spaxels**, all wavelength channels (one fitsio column read per spaxel).\n",
+        "- Defunct mask uses `np.any(isnan(spec))` on the `LMIN_TOT`–`LMAX_TOT` trim (`spatialMasking/default.py`); edge blank channels defunct every spaxel.\n",
+        "- Audit also reports `trim_no_edge_blank` (drop leading/trailing all-NaN pads).\n",
         "- `MUSE_WFM` does **not** exclude or infill NaD/laser gap; `MUSE_WFMAON` does (`ngistPipeline/readData/`).\n",
         "\n## Per-survey medians\n",
     ]
@@ -156,7 +172,7 @@ def main() -> int:
             continue
         lines.append(f"\n### {survey} ({len(sub)} cubes)\n")
         lines.append(
-            f"- Median defunct@1% (trim_all): **{sub['frac_defunct_1pct'].median():.4f}**\n"
+            f"- Median defunct@1% in sample (trim_all): **{sub['frac_defunct_1pct'].median():.4f}**\n"
         )
         lines.append(
             f"- Median defunct@1% (snr_no_nad): **{sub['frac_defunct_1pct_no_nad'].median():.4f}**\n"
@@ -169,9 +185,19 @@ def main() -> int:
         )
 
     if len(df[df["survey"] == "PHANGS"]) and len(df[df["survey"] == "MAUVE"]):
-        p = df[df["survey"] == "PHANGS"]["frac_defunct_1pct"].median()
-        m = df[df["survey"] == "MAUVE"]["frac_defunct_1pct"].median()
-        pn = df[df["survey"] == "PHANGS"]["frac_defunct_1pct_no_nad"].median()
+        pcol = (
+            "frac_defunct_1pct"
+            if "frac_defunct_1pct" in df.columns
+            else "frac_defunct_0.01_in_sample"
+        )
+        pncol = (
+            "frac_defunct_1pct_no_nad"
+            if "frac_defunct_1pct_no_nad" in df.columns
+            else "frac_defunct_1pct_no_nad_in_sample"
+        )
+        p = df[df["survey"] == "PHANGS"][pcol].median()
+        m = df[df["survey"] == "MAUVE"][pcol].median()
+        pn = df[df["survey"] == "PHANGS"][pncol].median()
         lines.append("\n## Interpretation\n")
         if p > max(m * 1.5, 0.02):
             interpretation = (
@@ -207,7 +233,13 @@ def main() -> int:
 
     md = "".join(lines)
     args.out.write_text(md, encoding="utf-8")
-    write_html(args.audit_root / "report.html", df, stack_df, interpretation)
+    if len(df):
+        write_html(args.audit_root / "report.html", df, stack_df, interpretation)
+    else:
+        (args.audit_root / "report.html").write_text(
+            "<html><body><p>No successful audits in audit_index.csv (status=ok).</p></body></html>",
+            encoding="utf-8",
+        )
     print(f"Wrote {args.out}, {args.out.with_suffix('.csv')}, report.html")
     return 0
 

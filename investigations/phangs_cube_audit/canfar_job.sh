@@ -23,6 +23,9 @@ source "${WORK}/venv/bin/activate"
 pip install -q -r requirements-canfar.txt
 
 export OMP_NUM_THREADS=1
+N_SAMPLE="${N_SAMPLE_SPAXELS:-10}"
+SAMPLE_SEED="${SAMPLE_SEED:-42}"
+AUDIT_EXTRA=(--n-sample "${N_SAMPLE}" --sample-seed "${SAMPLE_SEED}")
 
 if [[ "${MODE}" == "synthetic-test" ]]; then
   SYN="${WORK}/synthetic_cubes"
@@ -63,7 +66,8 @@ python3 run_audit_batch.py \
   --survey PHANGS \
   --max-cubes "${MAX_PHANGS}" \
   --smallest-first \
-  --lmin-tot 4800 --lmax-tot 7000
+  --lmin-tot 4800 --lmax-tot 7000 \
+  "${AUDIT_EXTRA[@]}"
 
 echo "==> Audit MAUVE (mode=${MODE})"
 python3 run_audit_batch.py \
@@ -72,16 +76,17 @@ python3 run_audit_batch.py \
   --survey MAUVE \
   --max-cubes "${MAX_MAUVE}" \
   --smallest-first \
-  --lmin-tot 4800 --lmax-tot 7000
+  --lmin-tot 4800 --lmax-tot 7000 \
+  "${AUDIT_EXTRA[@]}"
 
 echo "==> Aggregate"
 python3 aggregate_report.py \
   --audit-root "${REPORT}" \
   --out "${REPORT}/PHANGS_vs_MAUVE_summary.md"
 
-echo "Done. Reports: ${REPORT}"
+echo "Done. Reports: ${REPORT} (${N_SAMPLE} random spaxels/cube, seed=${SAMPLE_SEED})"
 echo "  audit_index.csv"
 echo "  PHANGS_vs_MAUVE_summary.md"
 echo "  report.html"
 echo "  stacked_channel_profile.csv"
-echo "  <survey>/<cube_stem>/*_channel_nan.csv, *_spaxel_nan_stats.csv, *_diagnosis.txt"
+echo "  <survey>/<cube_stem>/*_channel_nan*.csv, *_hdu_summary.csv, *_spaxel_nan_stats.csv, *_diagnosis.txt"

@@ -3,83 +3,77 @@
 Isolated investigation for NaN / NaD / laser-gap patterns in MUSE cubes.
 Does **not** modify nGIST pipeline code on this branch.
 
+## Sampling strategy
+
+Each cube is audited by reading **10 random spaxels** (configurable) over **all**
+wavelength channels (`NAXIS3`). Fitsio reads one spectrum per sampled spaxel
+(`[:, iy, ix]`) — no full-cube load into RAM.
+
+Channel metrics report the fraction of those 10 spaxels that are NaN at each λ.
+**Every 3D HDU** in the file gets the same 10 spaxel indices (one spectrum read
+per spaxel per HDU). Defunct / SNR simulations use the primary flux (+ stat) HDU
+on the trimmed wavelength range.
+
 ## Hypothesis
 
-PHANGS cubes may have NaNs concentrated in the NaD / LGS wavelength gap.
-[`MUSE_WFM`](../../ngistPipeline/readData/MUSE_WFM.py) computes defunct `nan_frac` over the
-full trimmed spectrum and does **not** exclude or infill the laser gap (unlike
-[`MUSE_WFMAON`](../../ngistPipeline/readData/MUSE_WFMAON.py)).
+PHANGS cubes can show two distinct NaN patterns (not every galaxy has both):
+
+1. **Edge blank pads** — leading/trailing channels that are all-NaN on every
+   spaxel (native axis wider than science range). Example:
+   `.../phangs-muse/cubes/NGC1087_PHANGS_DATACUBE_native.fits`. Tightening
+   `LMIN_TOT` / `LMAX_TOT` (or dropping blank ends before read) fixes defunct
+   because `maskDefunctSpaxels` rejects on `np.any(np.isnan(spec))`.
+2. **NaD / LGS gap** — partial NaNs in the laser window; `MUSE_WFM` does not
+   exclude or infill (unlike `MUSE_WFMAON`).
+
+The audit reports `*_edge_blank.csv` (pad counts, suggested λ range) and compares
+defunct counts for `trim_all` vs `trim_no_edge_blank`.
 
 ## Requirements
 
 - Python 3.9+
 - `fitsio`, `numpy`, `pandas` (`requirements-canfar.txt`)
-- ~30 GB RAM: one wavelength plane at a time; spaxel chunks checked against 25 GB cap
+- RAM: O(`NAXIS3` × `n_sample`) per cube (default 10 spaxels × ~7k channels)
 
 ## CANFAR execution
 
 ```bash
 cd /path/to/gist-geckos
-git fetch origin investigate/phangs-cube-nan-audit
 git checkout investigate/phangs-cube-nan-audit
 
 export PHANGS_DIR=/arc/projects/mauve/toby_sandbox/multiwavelength/phangs/phangs-muse/cubes
 export MAUVE_DIR=/arc/projects/mauve/cubes/v3.0
 export SCRATCH=/scratch/$USER/phangs_nan_audit
+export N_SAMPLE_SPAXELS=10
+export SAMPLE_SEED=42
 
-# Pilot: 3 smallest PHANGS + 3 smallest MAUVE cubes
 bash investigations/phangs_cube_audit/canfar_job.sh pilot
-
-# Full catalog
 bash investigations/phangs_cube_audit/canfar_job.sh full
 ```
 
-Local validation (no arc paths):
+Local smoke test:
 
 ```bash
-bash investigations/phangs_cube_audit/canfar_job.sh synthetic-test
+SCRATCH=/tmp/$USER/phangs_nan_audit bash investigations/phangs_cube_audit/canfar_job.sh synthetic-test
 ```
 
-## Scripts
-
-| Script | Role |
-|--------|------|
-| `discover_cubes.py` | Catalog FITS under PHANGS/MAUVE roots |
-| `discover_configs.py` | Optional: scan config trees for READ_DATA / LMIN_SNR |
-| `audit_one_cube.py` | Per-file channel + spaxel audit (fitsio) |
-| `run_audit_batch.py` | Batch driver; merges `audit_index.csv` per survey |
-| `aggregate_report.py` | Summary MD, CSV, HTML, stacked λ profile |
-| `make_synthetic_cubes.py` | Tiny test cubes for CI/local smoke test |
-| `canfar_job.sh` | End-to-end driver |
-
-## Outputs (`$SCRATCH/<job_id>/reports/`)
+## Outputs
 
 | File | Content |
 |------|---------|
-| `cube_catalog.csv` | All discovered cubes |
-| `config_catalog.csv` | Optional nGIST config snippets |
-| `audit_index.csv` | Per-cube status + key metrics |
-| `PHANGS_vs_MAUVE_summary.md` | Cross-survey report + recommendation |
-| `report.html` | HTML summary |
-| `stacked_channel_profile.csv` | Mean frac NaN vs λ per survey |
-| `hot_channel_ranges.csv` | Wavelength ranges of hot channels |
-| `{survey}/{stem}_channel_nan.csv` | Per-channel NaN fractions + mask flags |
-| `{survey}/{stem}_hot_channels.csv` | Channels with >50% NaN spaxels |
-| `{survey}/{stem}_spaxel_nan_stats.csv` | Defunct simulation by mask domain |
-| `{survey}/{stem}_meta.json` | HDU indices, shapes, metrics |
-| `{survey}/{stem}_diagnosis.txt` | Short verdict |
-
-## Wavelength masks (rest frame, Å)
-
-| Domain | Range | Use |
-|--------|-------|-----|
-| `snr_default` | 4750–7100 (CLI) | Matches typical MasterConfig SNR band |
-| `nad_gap` | 5860–5900 | NaD / PHANGS non-observed |
-| `laser_lgs` | 5770–6050 | WFMAON LGS exclusion |
-| `snr_no_nad` | SNR minus NaD | Proposed clean defunct/SNR statistics |
+| `{stem}_channel_nan.csv` | Primary flux HDU (+ stat columns if present) |
+| `{stem}_channel_nan_all_hdus.csv` | All 3D HDUs stacked (`hdu_ext`, `hdu_name`, …) |
+| `{stem}_ext{N}_{name}_channel_nan.csv` | Per-HDU channel NaN fractions |
+| `{stem}_hdu_summary.csv` | Per-HDU read status and trim/NaD means |
+| `{stem}_edge_blank.csv` | Leading/trailing all-NaN pads + suggested `LMIN/LMAX_TOT` |
+| `{stem}_sample_spaxels.csv` | Per sampled spaxel: nan_frac by mask domain (flux) |
+| `{stem}_spaxel_nan_stats.csv` | Defunct counts in sample (out of 10) |
+| `{stem}_meta.json` | HDU info, `hdu_audit`, sample indices, seed |
 
 ## Single cube
 
 ```bash
-python3 audit_one_cube.py /arc/.../cube.fits --out-dir /scratch/$USER/audit_one --redshift 0.005
+python3 audit_one_cube.py /arc/.../cube.fits \
+  --out-dir /scratch/$USER/audit_one \
+  --n-sample 10 --sample-seed 42
 ```
