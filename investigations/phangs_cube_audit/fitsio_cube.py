@@ -13,11 +13,13 @@ def list_hdus(path: Path) -> list[dict]:
         out = []
         for i, hdu in enumerate(f):
             hdr = hdu.read_header()
+            naxis = int(hdr.get("NAXIS", 0))
+            shape = tuple(int(hdr[f"NAXIS{j}"]) for j in range(1, naxis + 1))
             out.append({
                 "ext": i,
-                "name": hdr.get("EXTNAME", ""),
-                "naxis": hdr.get("NAXIS", 0),
-                "shape": tuple(hdr[i] for i in range(1, int(hdr.get("NAXIS", 0)) + 1) if hdr.get(f"NAXIS{i}")),
+                "name": str(hdr.get("EXTNAME", "")),
+                "naxis": naxis,
+                "shape": shape,
             })
         return out
 
@@ -40,7 +42,7 @@ def find_data_hdu(path: Path) -> tuple[int, int | None]:
             if h["naxis"] == 3:
                 flux_ext = h["ext"]
                 break
-    if stat_ext is None and len(hdus) > 2:
+    if stat_ext is None:
         for h in hdus:
             if h["naxis"] == 3 and h["ext"] != flux_ext:
                 stat_ext = h["ext"]
@@ -53,19 +55,15 @@ def find_data_hdu(path: Path) -> tuple[int, int | None]:
 def read_header_wcs(path: Path, ext: int) -> dict:
     with fitsio.FITS(str(path)) as f:
         hdr = f[ext].read_header()
-    crval3 = float(hdr["CRVAL3"])
-    cdelt3 = float(hdr.get("CDELT3", hdr.get("CD3_3", 1.0)))
-    n3 = int(hdr["NAXIS3"])
-    crval2 = float(hdr.get("CRVAL2", 0))
-    crval1 = float(hdr.get("CRVAL1", 0))
     return {
-        "crval3": crval3,
-        "cdelt3": cdelt3,
-        "naxis3": n3,
+        "crval3": float(hdr["CRVAL3"]),
+        "cdelt3": float(hdr.get("CDELT3", hdr.get("CD3_3", 1.0))),
+        "naxis3": int(hdr["NAXIS3"]),
         "naxis2": int(hdr["NAXIS2"]),
         "naxis1": int(hdr["NAXIS1"]),
         "bunit": str(hdr.get("BUNIT", "")),
         "extname": str(hdr.get("EXTNAME", "")),
+        "ctype3": str(hdr.get("CTYPE3", "")),
     }
 
 
@@ -74,3 +72,27 @@ def read_plane(path: Path, ext: int, iz: int) -> np.ndarray:
     with fitsio.FITS(str(path)) as f:
         slab = f[ext][iz, :, :]
     return np.asarray(slab, dtype=np.float64)
+
+
+def estimate_spaxel_chunk_bytes(
+    n_trim: int,
+    chunk_spaxels: int,
+    has_stat: bool,
+) -> int:
+    """Bytes for one spaxel chunk slab (spec [, stat])."""
+    per = 8 * n_trim * chunk_spaxels
+    return per * (2 if has_stat else 1)
+
+
+def check_ram_budget(
+    n_trim: int,
+    chunk_spaxels: int,
+    has_stat: bool,
+    max_gb: float = 25.0,
+) -> None:
+    need = estimate_spaxel_chunk_bytes(n_trim, chunk_spaxels, has_stat)
+    if need > max_gb * 1e9:
+        raise MemoryError(
+            f"Spaxel chunk would need {need / 1e9:.2f} GB > {max_gb} GB; "
+            f"reduce SPAXEL_CHUNK (n_trim={n_trim}, chunk={chunk_spaxels})"
+        )

@@ -1,6 +1,6 @@
 #!/bin/bash
 # CANFAR / arc batch driver for PHANGS vs MAUVE cube NaN audit.
-# Usage: bash canfar_job.sh [pilot|full]
+# Usage: bash canfar_job.sh [pilot|full|synthetic-test]
 set -euo pipefail
 
 MODE="${1:-pilot}"
@@ -8,6 +8,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 AUDIT_DIR="${REPO_ROOT}/investigations/phangs_cube_audit"
 PHANGS_DIR="${PHANGS_DIR:-/arc/projects/mauve/toby_sandbox/multiwavelength/phangs/phangs-muse/cubes}"
 MAUVE_DIR="${MAUVE_DIR:-/arc/projects/mauve/cubes/v3.0}"
+CONFIG_PHANGS="${CONFIG_PHANGS:-/arc/projects/mauve/toby_sandbox/configFiles}"
+CONFIG_MAUVE="${CONFIG_MAUVE:-/arc/projects/mauve/products/configFiles}"
 SCRATCH="${SCRATCH:-/scratch/${USER}/phangs_nan_audit}"
 JOB_ID="$(date +%Y%m%d_%H%M%S)_${MODE}"
 WORK="${SCRATCH}/${JOB_ID}"
@@ -22,17 +24,36 @@ pip install -q -r requirements-canfar.txt
 
 export OMP_NUM_THREADS=1
 
-echo "==> Discover cubes"
-python3 discover_cubes.py \
-  --phangs-dir "${PHANGS_DIR}" \
-  --mauve-dir "${MAUVE_DIR}" \
-  --out "${WORK}/cube_catalog.csv"
-
-MAX_PHANGS=3
-MAX_MAUVE=3
-if [[ "${MODE}" == "full" ]]; then
+if [[ "${MODE}" == "synthetic-test" ]]; then
+  SYN="${WORK}/synthetic_cubes"
+  python3 make_synthetic_cubes.py --out-dir "${SYN}"
+  python3 discover_cubes.py \
+    --phangs-dir "${SYN}/PHANGS" \
+    --mauve-dir "${SYN}/MAUVE" \
+    --out "${WORK}/cube_catalog.csv"
   MAX_PHANGS=0
   MAX_MAUVE=0
+else
+  echo "==> Discover cubes"
+  python3 discover_cubes.py \
+    --phangs-dir "${PHANGS_DIR}" \
+    --mauve-dir "${MAUVE_DIR}" \
+    --out "${WORK}/cube_catalog.csv"
+
+  MAX_PHANGS=3
+  MAX_MAUVE=3
+  if [[ "${MODE}" == "full" ]]; then
+    MAX_PHANGS=0
+    MAX_MAUVE=0
+  fi
+
+  if [[ -d "${CONFIG_PHANGS}" || -d "${CONFIG_MAUVE}" ]]; then
+    echo "==> Discover nGIST configs (READ_DATA METHOD / LMIN_SNR)"
+    CFG_ARGS=()
+    [[ -d "${CONFIG_PHANGS}" ]] && CFG_ARGS+=(--config-root "${CONFIG_PHANGS}")
+    [[ -d "${CONFIG_MAUVE}" ]] && CFG_ARGS+=(--config-root "${CONFIG_MAUVE}")
+    python3 discover_configs.py "${CFG_ARGS[@]}" --out "${WORK}/config_catalog.csv" || true
+  fi
 fi
 
 echo "==> Audit PHANGS (mode=${MODE})"
@@ -61,4 +82,6 @@ python3 aggregate_report.py \
 echo "Done. Reports: ${REPORT}"
 echo "  audit_index.csv"
 echo "  PHANGS_vs_MAUVE_summary.md"
-echo "  <survey>/<cube_stem>/*_channel_nan.csv, *_meta.json, *_diagnosis.txt"
+echo "  report.html"
+echo "  stacked_channel_profile.csv"
+echo "  <survey>/<cube_stem>/*_channel_nan.csv, *_spaxel_nan_stats.csv, *_diagnosis.txt"
