@@ -16,7 +16,6 @@ from ngistPipeline.auxiliary._ppxf_sanitize import (
 from ngistPipeline.prepareSpectra.default import spatialBinning as coadd_spatial_bins
 from ngistPipeline.spatialBinning.voronoi import sn_func
 from ngistPipeline.spatialMasking.default import (
-    DEFUNCT_MAX_NAN_FRAC,
     applySNRThreshold,
     maskDefunctSpaxels,
 )
@@ -70,41 +69,23 @@ def _make_cube(nx=4, ny=3, npix=10, signal=None, noise=None, snr=None, spec=None
     return {"spec": spec, "signal": signal, "noise": noise, "snr": snr}
 
 
-def test_maskDefunctSpaxels_rejects_nonfinite_scalars():
-    cube = _make_cube()
-    # spaxel 0: NaN signal; spaxel 1: NaN noise; spaxel 2: NaN snr
-    cube["signal"][0] = np.nan
-    cube["noise"][1] = np.nan
-    cube["snr"][2] = np.nan
-    masked = maskDefunctSpaxels(cube)
-    assert masked[0]
-    assert masked[1]
-    assert masked[2]
-    assert not masked[3]
-
-
-def test_maskDefunctSpaxels_default_allows_up_to_one_percent_nan():
-    npix = 200
-    n_spaxels = 4
-    spec = np.ones((npix, n_spaxels))
-    spec[0, 0] = np.nan  # 0.5% NaN — below default threshold
-    spec[:3, 1] = np.nan  # 1.5% NaN — above default threshold
-    cube = _make_cube(nx=2, ny=2, npix=npix, spec=spec)
-    assert DEFUNCT_MAX_NAN_FRAC == 0.01
-    masked = maskDefunctSpaxels(cube)
-    assert not masked[0]
-    assert masked[1]
-    assert not masked[2]
-    assert not masked[3]
-
-
-def test_maskDefunctSpaxels_strict_any_nan_when_threshold_zero():
+def test_maskDefunctSpaxels_rejects_any_nan_in_spec():
     npix = 200
     spec = np.ones((npix, 2))
     spec[0, 0] = np.nan
     cube = _make_cube(nx=2, ny=1, npix=npix, spec=spec)
-    masked = maskDefunctSpaxels(cube, max_nan_frac=0.0)
+    masked = maskDefunctSpaxels(cube)
     assert masked[0]
+    assert not masked[1]
+
+
+def test_maskDefunctSpaxels_rejects_nonpositive_median():
+    spec = np.array([[1.0, -1.0, 1.0], [1.0, 1.0, 1.0]])
+    cube = _make_cube(nx=3, ny=1, npix=2, spec=spec)
+    masked = maskDefunctSpaxels(cube)
+    assert not masked[0]
+    assert masked[1]
+    assert not masked[2]
 
 
 def test_applySNRThreshold_actual_rejects_nan_snr():

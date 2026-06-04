@@ -6,6 +6,10 @@
 ------------------------------------------------------------------------------------------
 VERSION    DATE          DESCRIPTION
 ------------------------------------------------------------------------------------------
+V7.4.6       2026-06-04 CHANGED: Defunct mask rolled back to original policy:
+			 reject spaxels with any NaN in trimmed flux (`np.any(isnan(spec))`)
+			 or non-positive median; removed `DEFUNCT_MAX_NAN_FRAC` fraction rule.
+
 V7.4.5       2026-06-02 CHANGED: Defunct mask `DEFUNCT_MAX_NAN_FRAC` default restored
 			 to 0.01 (reject spaxels when >1% of flux channels are NaN). Use
 			 `maskDefunctSpaxels(..., max_nan_frac=0)` for v0.6-compatible strict

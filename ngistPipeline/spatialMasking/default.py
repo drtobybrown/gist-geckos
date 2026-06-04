@@ -5,11 +5,6 @@ import numpy as np
 from astropy.io import fits
 from printStatus import printStatus
 
-# Spaxels with more than this fraction of NaN flux channels are marked defunct.
-# 0 rejects any spaxel with a NaN flux channel (v0.6-style); 0.01 allows partial NaN.
-DEFUNCT_MAX_NAN_FRAC = 0.0
-
-
 def generate_spatial_mask(config, cube):
     """
     Generates a spatial mask for the input cube based on defunct spaxels, signal-to-noise ratio threshold,
@@ -76,50 +71,30 @@ def generateSpatialMask(config, cube):
     return None
 
 
-def maskDefunctSpaxels(cube, max_nan_frac=DEFUNCT_MAX_NAN_FRAC):
+def maskDefunctSpaxels(cube):
     """
-    Mask defunct spaxels: all-NaN spectra, >max_nan_frac NaN channels, non-positive
-    median flux, or non-finite scalar signal/noise/snr.
-
-    Default ``max_nan_frac`` is ``DEFUNCT_MAX_NAN_FRAC`` (0: any NaN channel defunct).
-    Spaxels with NaN fraction above that threshold are rejected. Use e.g. ``0.01``
-    to tolerate partial-NaN spectra (PHANGS/MUSE gap channels).
+    Mask defunct spaxels, in particular those containing np.nan's or have a
+    negative median.
     """
     spec = cube["spec"]
 
-    all_nan = np.all(np.isnan(spec), axis=0)
-    nan_frac = np.mean(np.isnan(spec), axis=0)
-    excess_nan = nan_frac > max_nan_frac
-    median_nonpositive = np.nanmedian(spec, axis=0) <= 0.0
+    idx_good = np.where(
+        ~np.logical_or(
+            np.any(np.isnan(spec), axis=0),
+            np.nanmedian(spec, axis=0) <= 0.0,
+        )
+    )[0]
 
-    nonfinite_scalars = (
-        ~np.isfinite(cube.get("signal", np.zeros(spec.shape[1])))
-        | ~np.isfinite(cube.get("noise", np.zeros(spec.shape[1])))
-        | ~np.isfinite(cube.get("snr", np.zeros(spec.shape[1])))
-    )
-
-    bad = np.logical_or.reduce(
-        (all_nan, excess_nan, median_nonpositive, nonfinite_scalars)
-    )
-    idx_bad = np.where(bad)[0]
-    idx_good = np.where(~bad)[0]
+    idx_bad = np.where(
+        np.logical_or(
+            np.any(np.isnan(spec), axis=0),
+            np.nanmedian(spec, axis=0) <= 0.0,
+        )
+    )[0]
 
     logging.info(
         "Masking defunct spaxels: " + str(len(idx_bad)) + " spaxels are rejected."
     )
-    n_excess_nan = int(np.sum(excess_nan & ~all_nan))
-    if n_excess_nan > 0:
-        logging.info(
-            "  of which %d due to NaN fraction > %.2g",
-            n_excess_nan,
-            max_nan_frac,
-        )
-    n_nonfinite = int(np.sum(nonfinite_scalars))
-    if n_nonfinite > 0:
-        logging.info(
-            "  of which %d due to non-finite scalar signal/noise/snr",
-            n_nonfinite,
-        )
 
     masked = np.ones(len(cube["snr"]), dtype=bool)
     masked[idx_good] = False
