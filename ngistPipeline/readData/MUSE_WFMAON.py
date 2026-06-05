@@ -47,58 +47,80 @@ def readCube(config):
     printStatus.running("Reading the MUSE-WFM cube")
     logging.info("Reading the MUSE-WFM cube: " + config["GENERAL"]["INPUT"])
 
-    # Reading the cube
-    hdu = fits.open(config["GENERAL"]["INPUT"])
-    hdr = hdu[1].header
-    hdr0 = hdu[0].header
-    data = hdu[1].data
-    s = np.shape(data)
-    spec = np.reshape(data, [s[0], s[1] * s[2]])
+    # Get shape from header to trim wavelength before loading full cube (saves memory)
+    with fits.open(config["GENERAL"]["INPUT"], memmap=True, lazy_load_hdus=True) as hdu:
+        if len(hdu) == 1:
+            ihdu = 0
+            printStatus.running("data in first HDU")
+        else:
+            ihdu = 1
 
-    wcshdr = WCS(hdr).to_header()
+        hdr = hdu[ihdu].header
+        # Shape (nwave, ny, nx) from FITS NAXIS
+        s = (hdr["NAXIS3"], hdr["NAXIS2"], hdr["NAXIS1"])
+        wcshdr = WCS(hdr).to_header()
+        has_stat_hdu = len(hdu) >= 3
 
-    # Read the error spectra if available. Otherwise estimate the errors with the der_snr algorithm
-    if len(hdu) >= 3:
-        logging.info("Reading the error spectra from the cube")
-        stat = hdu[2].data
-        espec = np.reshape(stat, [s[0], s[1] * s[2]])
-    elif len(hdu) <= 2:
-        logging.info(
-            "No error extension found. Estimating the error spectra with the der_snr algorithm"
-        )
-        noise_per_spaxel = der_snr.der_snr_2d(spec)
-        espec = np.broadcast_to(
-            noise_per_spaxel.reshape(1, -1), spec.shape
-        ).copy()
+    # Compute wavelength and trim index before loading data
+    if "CD3_3" not in hdr.keys():
+        cdelt2 = hdr["CDELT3"]
+        cdelt3 = hdr["CDELT3"]
+    else:
+        cdelt2 = hdr["CD2_2"]
+        cdelt3 = hdr["CD3_3"]
+    wave_full = hdr["CRVAL3"] + (np.arange(s[0])) * cdelt3
+    wave_full = wave_full / (1 + config["GENERAL"]["REDSHIFT"])
+    lmin = config["READ_DATA"]["LMIN_TOT"]
+    lmax = config["READ_DATA"]["LMAX_TOT"]
+    idx = np.where(np.logical_and(wave_full >= lmin, wave_full <= lmax))[0]
 
-    # Getting the wavelength info
-    wave = hdr["CRVAL3"] + (np.arange(s[0])) * hdr["CD3_3"]
+    # Read only the wavelength slice to avoid holding full cube in memory
+    with fits.open(config["GENERAL"]["INPUT"], memmap=True, lazy_load_hdus=True) as hdu:
+        data = hdu[ihdu].data
+        data_slice = np.asarray(data[idx, :, :], dtype=np.float64)
+        spec = np.reshape(data_slice, [len(idx), s[1] * s[2]])
+
+        # Read the variance spectra if available. Otherwise estimate with der_snr
+        if has_stat_hdu:
+            logging.info("Reading the error (variance) spectra from the cube")
+            stat = hdu[2].data
+            stat_slice = np.asarray(stat[idx, :, :], dtype=np.float64)
+            espec = np.reshape(stat_slice, [len(idx), s[1] * s[2]])
+        else:
+            logging.info(
+                "No error (variance) extension found. Estimating the variance spectra with the der_snr algorithm"
+            )
+            noise_per_spaxel = der_snr.der_snr_2d(spec)
+            espec = np.broadcast_to(
+                noise_per_spaxel.reshape(1, -1), spec.shape
+            ).copy()
+
+    wave = wave_full[idx]
 
     # Correct spectra for Galactic extinction (taken from PHANGS DAP)
-    if config['READ_DATA']['EBmV'] is not None:
+    if config["READ_DATA"]["EBmV"] is not None:
         Rv = 3.1
-        Av = Rv * config['READ_DATA']['EBmV']
+        Av = Rv * config["READ_DATA"]["EBmV"]
         ones = np.ones_like(wave)
         extinction_curve = extinction.apply(extinction.ccm89(wave, Av, Rv), ones)
-        reshaped_extinction_curve = reshape_extintion_curve(extinction_curve, spec) #spec may need to be 'data'
-        spec = spec / reshaped_extinction_curve # spec may need to be data
-        espec = espec / reshaped_extinction_curve
-    else:
-        spec = spec #Don't do anything to the spectra if no dust value given
-        espec = espec    
+        reshaped_extinction_curve = reshape_extintion_curve(
+            extinction_curve, spec
+        )
+        np.divide(spec, reshaped_extinction_curve, out=spec)
+        np.divide(espec, reshaped_extinction_curve, out=espec)
+    # else: spec and espec unchanged
 
     # Getting the spatial coordinates
     origin = [
         float(config["READ_DATA"]["ORIGIN"].split(",")[0].strip()),
         float(config["READ_DATA"]["ORIGIN"].split(",")[1].strip()),
     ]
-    xaxis = (np.arange(s[2]) - origin[0]) * hdr["CD2_2"] * 3600.0
-    yaxis = (np.arange(s[1]) - origin[1]) * hdr["CD2_2"] * 3600.0
+    xaxis = (np.arange(s[2]) - origin[0]) * cdelt2 * 3600.0
+    yaxis = (np.arange(s[1]) - origin[1]) * cdelt2 * 3600.0
     x, y = np.meshgrid(xaxis, yaxis)
     x = np.reshape(x, [s[1] * s[2]])
     y = np.reshape(y, [s[1] * s[2]])
-    pixelsize = hdr["CD2_2"] * 3600.0
-
+    pixelsize = cdelt2 * 3600.0
     logging.info(
         "Extracting spatial information:\n"
         + loggingBlanks
@@ -110,20 +132,6 @@ def readCube(config):
         + str(pixelsize)
     )
 
-    # De-redshift spectra
-    wave = wave / (1 + config["GENERAL"]["REDSHIFT"])
-    logging.info(
-        "Shifting spectra to rest-frame, assuming a redshift of "
-        + str(config["GENERAL"]["REDSHIFT"])
-    )
-
-    # Shorten spectra to required wavelength range
-    lmin = config["READ_DATA"]["LMIN_TOT"]
-    lmax = config["READ_DATA"]["LMAX_TOT"]
-    idx = np.where(np.logical_and(wave >= lmin, wave <= lmax))[0]
-    spec = spec[idx, :]
-    espec = espec[idx, :]
-    wave = wave[idx]
     logging.info(
         "Shortening spectra to the wavelength range from "
         + str(config["READ_DATA"]["LMIN_TOT"])
@@ -132,27 +140,22 @@ def readCube(config):
         + "A."
     )
 
-    # Computing the SNR per spaxel
+    # Computing the SNR per spaxel (rest-frame wave; exclude LGS gap 5770-6050 A)
     idx_snr = np.where(
         np.logical_and.reduce(
             [
                 wave >= config["READ_DATA"]["LMIN_SNR"],
                 wave <= config["READ_DATA"]["LMAX_SNR"],
-                np.logical_or(
-                    wave < 5770 / (1 + config["GENERAL"]["REDSHIFT"]), # was 5820 or similar
-                    wave > 6050 / (1 + config["GENERAL"]["REDSHIFT"]), # was 5970
-                ),
+                np.logical_or(wave <= 5770, wave >= 6050),
             ]
         )
     )[0]
     signal = np.nanmedian(spec[idx_snr, :], axis=0)
-    if len(hdu) >= 3:
-        #noise = np.abs(np.nanmedian(np.sqrt(espec[idx_snr, :]), axis=0)) old
+    if has_stat_hdu:
         noise = np.sqrt(np.nanmedian(espec[idx_snr, :], axis=0))
-    elif len(hdu) <= 2:
+    else:
         noise = espec[0, :]  # DER_SNR returns constant error spectra
     snr = np.nanmedian(spec[idx_snr, :] / np.sqrt(espec[idx_snr, :]), axis=0)
-    #snr = signal / noise old
     logging.info(
         "Computing the signal-to-noise ratio in the wavelength range from "
         + str(config["READ_DATA"]["LMIN_SNR"])
@@ -162,17 +165,17 @@ def readCube(config):
     )
 
     # Replacing the np.nan in the laser region by the median of the spectrum
-    idx_laser = np.where(
-        np.logical_and(
-            wave > 5770,#  / (1 + config["GENERAL"]["REDSHIFT"]), # was 5820 then 5780
-            wave < 6050,# / (1 + config["GENERAL"]["REDSHIFT"]), # was 5970 then 5970
-        )
-    )[0]
+    idx_laser = np.where(np.logical_and(wave > 5770, wave < 6050))[0]
     spec[idx_laser, :] = signal
     espec[idx_laser, :] = noise
     logging.info(
-        "Replacing the spectral region affected by the LGS (5820A - 5970A) with the median signal of the spectra."
+        "Replacing the spectral region affected by the LGS (5770A - 6050A) with the median signal of the spectra."
     )
+
+    # Propagate data-unit metadata from input (BUNIT) for downstream FITS/HDF5 products
+    bunit = hdr.get("BUNIT")
+    if bunit is not None:
+        bunit = str(bunit).strip()
 
     # Storing everything into a structure
     cube = {
@@ -186,15 +189,17 @@ def readCube(config):
         "noise": noise,
         "pixelsize": pixelsize,
         "wcshdr": wcshdr,
-        "hdr0": hdr0,
+        "bunit": bunit,
     }
 
     # Constrain cube to one central row if switch DEBUG is set
     if config["READ_DATA"]["DEBUG"] == True:
         cube = set_debug(cube, s[2], s[1])
 
-    printStatus.updateDone("Reading the MUSE-WFM cube")
-    print("             Read " + str(len(cube["x"])) + " spectra!")
+    printStatus.updateDone(
+        "Done reading " + str(len(cube["x"])) + " spectra from the MUSE-WFM cube"
+    )
+
     logging.info(
         "Finished reading the MUSE cube! Read a total of "
         + str(len(cube["x"]))
